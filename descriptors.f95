@@ -372,6 +372,7 @@ module descriptors_module
 
    type soap
       real(dp) :: cutoff
+      real(dp) :: bond_cutoff
       real(dp) :: cutoff_transition_width
       real(dp) :: alpha, atom_sigma, covariance_sigma0, central_weight
 
@@ -384,6 +385,7 @@ module descriptors_module
       real(dp), dimension(:,:), allocatable :: transform_basis,cholesky_overlap_basis
 
       logical :: global = .false.
+      logical :: bond = .false.
       logical :: central_reference_all_species = .false.
       logical :: diagonal_radial = .false.
       logical :: normalise = .true.
@@ -2470,6 +2472,8 @@ module descriptors_module
       call param_register(params, 'cutoff', PARAM_MANDATORY, this%cutoff, help_string="Cutoff for soap-type descriptors")
       call param_register(params, 'cutoff_transition_width', '0.50', this%cutoff_transition_width, help_string="Cutoff transition width for soap-type descriptors")
 
+      call param_register(params, 'bond_cutoff', "0.0", this%bond_cutoff, has_value_target=this%bond, help_string="Cutoff for bond soap-type descriptors")
+
       call param_register(params, 'cutoff_dexp', '0', this%cutoff_dexp, help_string="Cutoff decay exponent")
       call param_register(params, 'cutoff_scale', '1.0', this%cutoff_scale, help_string="Cutoff decay scale")
       call param_register(params, 'cutoff_rate', '1.0', this%cutoff_rate, help_string="Inverse cutoff decay rate")
@@ -2620,12 +2624,14 @@ module descriptors_module
       this%cutoff_scale = 1.0_dp 
       this%cutoff_rate = 1.0_dp 
       this%cutoff = 0.0_dp
+      this%bond_cutoff = 0.0_dp
       this%cutoff_transition_width = 0.0_dp
       this%l_max = 0
       this%alpha = 0.0_dp
       this%central_weight = 0.0_dp
       this%central_reference_all_species = .false.
       this%global = .false.
+      this%bond = .false.
       this%diagonal_radial = .false.
       this%covariance_sigma0 = 0.0_dp
       this%normalise = .true.
@@ -7117,8 +7123,9 @@ module descriptors_module
 
       !SPEED type(cplx_1d), dimension(:,:,:), allocatable :: fourier_so3
       !SPEED type(cplx_2d), dimension(:,:,:), allocatable :: grad_fourier_so3
-      type(real_1d), dimension(:,:,:), allocatable, save :: fourier_so3_r, fourier_so3_i, global_fourier_so3_r, global_fourier_so3_i
-      type(real_2d), dimension(:,:,:), allocatable, save :: grad_fourier_so3_r, grad_fourier_so3_i
+      type(real_1d), dimension(:,:,:,:), allocatable, save :: fourier_so3_r, fourier_so3_i
+      type(real_1d), dimension(:,:,:), allocatable, save :: global_fourier_so3_r, global_fourier_so3_i
+      type(real_2d), dimension(:,:,:,:), allocatable, save :: grad_fourier_so3_r, grad_fourier_so3_i
       real(dp), allocatable :: t_g_r(:,:), t_g_i(:,:), t_f_r(:,:), t_f_i(:,:), t_g_f_rr(:,:), t_g_f_ii(:,:)
       integer :: alpha
 
@@ -7142,10 +7149,10 @@ module descriptors_module
       integer :: max_n_neigh
 !$omp threadprivate(radial_fun, radial_coefficient, grad_radial_fun, grad_radial_coefficient)
 !$omp threadprivate(sphericalycartesian_all_t, gradsphericalycartesian_all_t)
-!$omp threadprivate(fourier_so3_r, fourier_so3_i)
+!!$omp threadprivate(fourier_so3_r, fourier_so3_i)
 !$omp threadprivate(SphericalY_ij,grad_SphericalY_ij)
 !$omp threadprivate(descriptor_i, grad_descriptor_i)
-!$omp threadprivate(grad_fourier_so3_r, grad_fourier_so3_i)
+!!$omp threadprivate(grad_fourier_so3_r, grad_fourier_so3_i)
 
       INIT_ERROR(error)
 
@@ -7238,13 +7245,13 @@ module descriptors_module
          max_n_neigh = max(max_n_neigh, n_neighbours(at, n_i))
       end do
 
-!$omp parallel default(none) shared(this,my_do_grad_descriptor,d,max_n_neigh) private(i_species, a, l, n_i)
+!$omp parallel default(none) shared(this,my_do_grad_descriptor,d,max_n_neigh,fourier_so3_r,fourier_so3_i) private(i,i_species, a, l, n_i)
       allocate(descriptor_i(d))
       if(my_do_grad_descriptor) allocate(grad_descriptor_i(d,3))
 
       allocate(radial_fun(0:this%l_max, this%n_max), radial_coefficient(0:this%l_max, this%n_max)) 
       !SPEED allocate(fourier_so3(0:this%l_max,this%n_max,this%n_species), SphericalY_ij(0:this%l_max))
-      allocate(fourier_so3_r(0:this%l_max,this%n_max,this%n_species), fourier_so3_i(0:this%l_max,this%n_max,this%n_species), SphericalY_ij(0:this%l_max))
+      allocate(fourier_so3_r(0:this%l_max,this%n_max,this%n_species,at%N), fourier_so3_i(0:this%l_max,this%n_max,this%n_species,at%N), SphericalY_ij(0:this%l_max))
 
       if(my_do_grad_descriptor) then
          allocate(grad_radial_fun(0:this%l_max, this%n_max), grad_radial_coefficient(0:this%l_max, this%n_max))
@@ -7256,15 +7263,17 @@ module descriptors_module
           allocate(gradsphericalycartesian_all_t(0:this%l_max, -this%l_max:this%l_max, 3))
       end if
 
-      do i_species = 1, this%n_species
-         do a = 1, this%n_max
-            do l = 0, this%l_max
-               !SPEED allocate(fourier_so3(l,a,i_species)%m(-l:l))
-               !SPEED fourier_so3(l,a,i_species)%m(:) = CPLX_ZERO
-               allocate(fourier_so3_r(l,a,i_species)%m(-l:l))
-               allocate(fourier_so3_i(l,a,i_species)%m(-l:l))
-               fourier_so3_r(l,a,i_species)%m(:) = 0.0_dp
-               fourier_so3_i(l,a,i_species)%m(:) = 0.0_dp
+      do i = 1, at%N
+         do i_species = 1, this%n_species
+            do a = 1, this%n_max
+               do l = 0, this%l_max
+                  !SPEED allocate(fourier_so3(l,a,i_species)%m(-l:l))
+                  !SPEED fourier_so3(l,a,i_species)%m(:) = CPLX_ZERO
+                  allocate(fourier_so3_r(l,a,i_species,i)%m(-l:l))
+                  allocate(fourier_so3_i(l,a,i_species,i)%m(-l:l))
+                  fourier_so3_r(l,a,i_species,i)%m(:) = 0.0_dp
+                  fourier_so3_i(l,a,i_species,i)%m(:) = 0.0_dp
+               enddo
             enddo
          enddo
       enddo
@@ -7276,18 +7285,20 @@ module descriptors_module
 
       if (my_do_grad_descriptor) then
           !SPEED allocate( grad_fourier_so3(0:this%l_max,this%n_max,n_neighbours(at,i,max_dist=this%cutoff)) )
-          allocate( grad_fourier_so3_r(0:this%l_max,this%n_max,max_n_neigh) )
-          allocate( grad_fourier_so3_i(0:this%l_max,this%n_max,max_n_neigh) )
-          do n_i=1, max_n_neigh
-              do a = 1, this%n_max
-                  do l = 0, this%l_max
-                     !SPEED allocate(grad_fourier_so3(l,a,n_i)%mm(3,-l:l))
-                     !SPEED grad_fourier_so3(l,a,n_i)%mm(:,:) = CPLX_ZERO
-                     allocate(grad_fourier_so3_r(l,a,n_i)%mm(3,-l:l))
-                     allocate(grad_fourier_so3_i(l,a,n_i)%mm(3,-l:l))
-                  end do
-              end do
-          end do
+          allocate( grad_fourier_so3_r(0:this%l_max,this%n_max,max_n_neigh,at%N) )
+          allocate( grad_fourier_so3_i(0:this%l_max,this%n_max,max_n_neigh,at%N) )
+          do i = 1, at%N
+             do n_i=1, max_n_neigh
+                 do a = 1, this%n_max
+                     do l = 0, this%l_max
+                        !SPEED allocate(grad_fourier_so3(l,a,n_i)%mm(3,-l:l))
+                        !SPEED grad_fourier_so3(l,a,n_i)%mm(:,:) = CPLX_ZERO
+                        allocate(grad_fourier_so3_r(l,a,n_i,i)%mm(3,-l:l))
+                        allocate(grad_fourier_so3_i(l,a,n_i,i)%mm(3,-l:l))
+                     end do
+                 end do
+             end do
+          enddo
       endif
 !$omp end parallel
 
@@ -7303,35 +7314,56 @@ module descriptors_module
 
          i_desc_i = i_desc_i + 1
          i_desc(i) = i_desc_i
+      enddo ! i = 1, at%N
 
-         if(.not. this%global) then ! atomic SOAP
-            if(my_do_descriptor) then
-               allocate(descriptor_out%x(i_desc_i)%data(d))
-               !slow, no need
-               !descriptor_out%x(i_desc_i)%data = 0.0_dp
-               allocate(descriptor_out%x(i_desc_i)%ci(n_index))
-               descriptor_out%x(i_desc_i)%has_data = .false.
-               descriptor_out%x(i_desc_i)%covariance_cutoff = 1.0_dp
+      if(.not. this%global) then ! atomic SOAP
+         n_i = 0
+         do i = 1, at%N
+            i_desc_i = i_desc(i)
+
+            if( i_desc_i == 0 ) cycle
+
+            if( this%bond ) then
+               do n = 1, n_neighbours(at,i)
+                  j = neighbour(at, i, n, distance = r_ij)
+                  if( r_ij >= this%bond_cutoff ) cycle
+                  if( i_desc(j) == 0 ) cycle
+
+                  n_i = n_i + 1
+                  allocate(descriptor_out%x(n_i)%data(d))
+                  allocate(descriptor_out%x(n_i)%ci(n_index))
+                  descriptor_out%x(n_i)%has_data = .false.
+                  descriptor_out%x(n_i)%covariance_cutoff = 1.0_dp
+               enddo
+            else
+               if(my_do_descriptor) then
+                  allocate(descriptor_out%x(i_desc_i)%data(d))
+                  !slow, no need
+                  !descriptor_out%x(i_desc_i)%data = 0.0_dp
+                  allocate(descriptor_out%x(i_desc_i)%ci(n_index))
+                  descriptor_out%x(i_desc_i)%has_data = .false.
+                  descriptor_out%x(i_desc_i)%covariance_cutoff = 1.0_dp
+               endif
+               if(my_do_grad_descriptor) then
+                  l_n_neighbours = n_neighbours(at,i,max_dist=this%cutoff)
+
+                  allocate(descriptor_out%x(i_desc_i)%grad_data(d,3,0:l_n_neighbours))
+                  allocate(descriptor_out%x(i_desc_i)%ii(0:l_n_neighbours))
+                  allocate(descriptor_out%x(i_desc_i)%pos(3,0:l_n_neighbours))
+                  allocate(descriptor_out%x(i_desc_i)%has_grad_data(0:l_n_neighbours))
+                  ! slow, no need
+                  ! descriptor_out%x(i_desc_i)%grad_data = 0.0_dp
+                  descriptor_out%x(i_desc_i)%grad_data(:,:,0) = 0.0_dp
+                  descriptor_out%x(i_desc_i)%ii = 0
+                  descriptor_out%x(i_desc_i)%pos = 0.0_dp
+                  descriptor_out%x(i_desc_i)%has_grad_data = .false.
+
+                  allocate(descriptor_out%x(i_desc_i)%grad_covariance_cutoff(3,0:l_n_neighbours))
+                  descriptor_out%x(i_desc_i)%grad_covariance_cutoff = 0.0_dp
+               endif
             endif
-            if(my_do_grad_descriptor) then
-               l_n_neighbours = n_neighbours(at,i,max_dist=this%cutoff)
-
-               allocate(descriptor_out%x(i_desc_i)%grad_data(d,3,0:l_n_neighbours))
-               allocate(descriptor_out%x(i_desc_i)%ii(0:l_n_neighbours))
-               allocate(descriptor_out%x(i_desc_i)%pos(3,0:l_n_neighbours))
-               allocate(descriptor_out%x(i_desc_i)%has_grad_data(0:l_n_neighbours))
-               ! slow, no need
-               ! descriptor_out%x(i_desc_i)%grad_data = 0.0_dp
-               descriptor_out%x(i_desc_i)%grad_data(:,:,0) = 0.0_dp
-               descriptor_out%x(i_desc_i)%ii = 0
-               descriptor_out%x(i_desc_i)%pos = 0.0_dp
-               descriptor_out%x(i_desc_i)%has_grad_data = .false.
-
-               allocate(descriptor_out%x(i_desc_i)%grad_covariance_cutoff(3,0:l_n_neighbours))
-               descriptor_out%x(i_desc_i)%grad_covariance_cutoff = 0.0_dp
-            endif
-         endif
-      enddo
+         enddo ! i = 1, at%N
+      endif ! .not. this%global
 
       allocate( &
          global_fourier_so3_r_array((this%l_max+1)**2 * this%n_max * this%n_species), &
@@ -7412,18 +7444,6 @@ module descriptors_module
             i_desc_i = i_desc(i)
          endif
 
-         if(.not.this%global) then
-            if(my_do_descriptor) then
-               descriptor_out%x(i_desc_i)%ci(1) = i
-               descriptor_out%x(i_desc_i)%has_data = .true.
-            endif
-            if(my_do_grad_descriptor) then
-               descriptor_out%x(i_desc_i)%ii(0) = i
-               descriptor_out%x(i_desc_i)%pos(:,0) = at%pos(:,i)
-               descriptor_out%x(i_desc_i)%has_grad_data(0) = .true.
-            endif
-         endif
-
          !do a = 1, this%n_max
          !   radial_fun(0,a) = exp( -this%alpha * this%r_basis(a)**2 ) !* this%r_basis(a)
          !enddo
@@ -7436,17 +7456,17 @@ module descriptors_module
             do a = 1, this%n_max
                !SPEED fourier_so3(0,a,i_species)%m(0) = radial_coefficient(0,a) * SphericalYCartesian(0,0,(/0.0_dp, 0.0_dp, 0.0_dp/))
                if( this%central_reference_all_species .or. this%species_Z(i_species) == at%Z(i) .or. this%species_Z(i_species) == 0 ) then
-                  fourier_so3_r(0,a,i_species)%m(0) = this%central_weight * real(radial_coefficient(0,a) * SphericalYCartesian(0,0,(/0.0_dp, 0.0_dp, 0.0_dp/)), dp)
-                  fourier_so3_i(0,a,i_species)%m(0) = this%central_weight * aimag(radial_coefficient(0,a) * SphericalYCartesian(0,0,(/0.0_dp, 0.0_dp, 0.0_dp/)))
+                  fourier_so3_r(0,a,i_species,i)%m(0) = this%central_weight * real(radial_coefficient(0,a) * SphericalYCartesian(0,0,(/0.0_dp, 0.0_dp, 0.0_dp/)), dp)
+                  fourier_so3_i(0,a,i_species,i)%m(0) = this%central_weight * aimag(radial_coefficient(0,a) * SphericalYCartesian(0,0,(/0.0_dp, 0.0_dp, 0.0_dp/)))
                else
-                  fourier_so3_i(0,a,i_species)%m(0) = 0.0_dp
-                  fourier_so3_r(0,a,i_species)%m(0) = 0.0_dp
+                  fourier_so3_i(0,a,i_species,i)%m(0) = 0.0_dp
+                  fourier_so3_r(0,a,i_species,i)%m(0) = 0.0_dp
                endif
 
                do l = 1, this%l_max
                   !SPEED fourier_so3(l,a,i_species)%m(:) = CPLX_ZERO
-                  fourier_so3_r(l,a,i_species)%m(:) = 0.0_dp
-                  fourier_so3_i(l,a,i_species)%m(:) = 0.0_dp
+                  fourier_so3_r(l,a,i_species,i)%m(:) = 0.0_dp
+                  fourier_so3_i(l,a,i_species,i)%m(:) = 0.0_dp
                enddo
             enddo
          enddo
@@ -7544,14 +7564,14 @@ module descriptors_module
                      !SPEED if(my_do_grad_descriptor) grad_fourier_so3(l,a,n_i)%mm(:,m) = grad_fourier_so3(l,a,n_i)%mm(:,m) + &
                      !SPEED    grad_radial_coefficient(l,a) * SphericalY_ij(l)%m(m) * u_ij + radial_coefficient(l,a) * grad_SphericalY_ij(l)%mm(:,m)
                      c_tmp(1) = radial_coefficient(l,a) * SphericalY_ij(l)%m(m)
-                     fourier_so3_r(l,a,i_species)%m(m) = fourier_so3_r(l,a,i_species)%m(m) + real(c_tmp(1))
-                     fourier_so3_i(l,a,i_species)%m(m) = fourier_so3_i(l,a,i_species)%m(m) + aimag(c_tmp(1))
+                     fourier_so3_r(l,a,i_species,i)%m(m) = fourier_so3_r(l,a,i_species,i)%m(m) + real(c_tmp(1))
+                     fourier_so3_i(l,a,i_species,i)%m(m) = fourier_so3_i(l,a,i_species,i)%m(m) + aimag(c_tmp(1))
                      if(my_do_grad_descriptor) then
                         c_tmp(:) = grad_radial_coefficient(l,a) * SphericalY_ij(l)%m(m) * u_ij(:) + radial_coefficient(l,a) * grad_SphericalY_ij(l)%mm(:,m)
                         ! grad_fourier_so3_r(l,a,n_i)%mm(:,m) = grad_fourier_so3_r(l,a,n_i)%mm(:,m) + real(c_tmp)
                         ! grad_fourier_so3_i(l,a,n_i)%mm(:,m) = grad_fourier_so3_i(l,a,n_i)%mm(:,m) + imag(c_tmp)
-                        grad_fourier_so3_r(l,a,n_i)%mm(:,m) = real(c_tmp)
-                        grad_fourier_so3_i(l,a,n_i)%mm(:,m) = aimag(c_tmp)
+                        grad_fourier_so3_r(l,a,n_i,i)%mm(:,m) = real(c_tmp)
+                        grad_fourier_so3_i(l,a,n_i,i)%mm(:,m) = aimag(c_tmp)
                      endif ! my_do_grad_descriptor
                   enddo ! m
                enddo ! l
@@ -7560,8 +7580,8 @@ module descriptors_module
          enddo ! n
 
          if(this%global .and. my_do_grad_descriptor) then
-            global_grad_fourier_so3_r_array(i_desc_i)%x = grad_fourier_so3_r(:,:,1:n_neighbours(at,i,max_dist=this%cutoff))
-            global_grad_fourier_so3_i_array(i_desc_i)%x = grad_fourier_so3_i(:,:,1:n_neighbours(at,i,max_dist=this%cutoff))
+            global_grad_fourier_so3_r_array(i_desc_i)%x = grad_fourier_so3_r(:,:,1:n_neighbours(at,i,max_dist=this%cutoff),i)
+            global_grad_fourier_so3_i_array(i_desc_i)%x = grad_fourier_so3_i(:,:,1:n_neighbours(at,i,max_dist=this%cutoff),i)
             !do n_i = lbound(grad_fourier_so3_r,3), ubound(grad_fourier_so3_r,3)
             !   do a = lbound(grad_fourier_so3_r,2), ubound(grad_fourier_so3_r,2)
             !      do l = lbound(grad_fourier_so3_r,1), ubound(grad_fourier_so3_r,1)
@@ -7578,172 +7598,248 @@ module descriptors_module
                a = rs_index(1,ia)
                i_species = rs_index(2,ia)
                do l = 0, this%l_max
-                  global_fourier_so3_r_array(i_coeff+1:i_coeff+2*l+1) = global_fourier_so3_r_array(i_coeff+1:i_coeff+2*l+1) + fourier_so3_r(l,a,i_species)%m(:)
-                  global_fourier_so3_i_array(i_coeff+1:i_coeff+2*l+1) = global_fourier_so3_i_array(i_coeff+1:i_coeff+2*l+1) + fourier_so3_i(l,a,i_species)%m(:)
+                  global_fourier_so3_r_array(i_coeff+1:i_coeff+2*l+1) = global_fourier_so3_r_array(i_coeff+1:i_coeff+2*l+1) + fourier_so3_r(l,a,i_species,i)%m(:)
+                  global_fourier_so3_i_array(i_coeff+1:i_coeff+2*l+1) = global_fourier_so3_i_array(i_coeff+1:i_coeff+2*l+1) + fourier_so3_i(l,a,i_species,i)%m(:)
                   i_coeff = i_coeff + 2*l+1
                enddo
             enddo
          endif
+      enddo ! i = 1, at%N
+!$omp end parallel do
 
-         i_pow = 0
-         do ia = 1, this%n_species*this%n_max
-            a = rs_index(1,ia)
-            i_species = rs_index(2,ia)
-            do jb = 1, ia
-               b = rs_index(1,jb)
-               j_species = rs_index(2,jb)
+      if( this%bond ) then
+         n_i = 0
+         do i = 1, at%N
+            if(i_desc(i) == 0) cycle
 
-               if(this%diagonal_radial .and. a /= b) cycle
-
-               do l = 0, this%l_max
-                  i_pow = i_pow + 1
-                  !SPEED descriptor_i(i_pow) = real( dot_product(fourier_so3(l,a,i_species)%m, fourier_so3(l,b,j_species)%m) )
-                  descriptor_i(i_pow) = dot_product(fourier_so3_r(l,a,i_species)%m, fourier_so3_r(l,b,j_species)%m) + dot_product(fourier_so3_i(l,a,i_species)%m, fourier_so3_i(l,b,j_species)%m)
-                  if(do_two_l_plus_one) descriptor_i(i_pow) = descriptor_i(i_pow) / sqrt(2.0_dp * l + 1.0_dp)
-                  if( ia /= jb ) descriptor_i(i_pow) = descriptor_i(i_pow) * SQRT_TWO
-               enddo !l
-            enddo !jb
-         enddo !ia
-
-         descriptor_i(d) = 0.0_dp
-         norm_descriptor_i = sqrt(dot_product(descriptor_i,descriptor_i))
-
-         if(.not. this%global .and. my_do_descriptor) then
-            if(this%normalise) then
-               descriptor_out%x(i_desc_i)%data = descriptor_i / norm_descriptor_i
-            else
-               descriptor_out%x(i_desc_i)%data = descriptor_i
-            endif
-
-            descriptor_out%x(i_desc_i)%data(d) = this%covariance_sigma0
-         endif
-
-         if(my_do_grad_descriptor) then
-! soap_calc 33 takes 0.047 s
-	    allocate(t_g_r(this%n_max*3, 2*this%l_max+1), t_g_i(this%n_max*3, 2*this%l_max+1))
-	    allocate(t_f_r(this%n_max*this%n_species, 2*this%l_max+1), t_f_i(this%n_max*this%n_species, 2*this%l_max+1))
-	    allocate(t_g_f_rr(this%n_max*3, this%n_max*this%n_species), t_g_f_ii(this%n_max*3, this%n_max*this%n_species))
-            !do n_i = 1, n_neighbours(at,i,max_dist=this%cutoff) 
-
-            n_i = 0
             do n = 1, n_neighbours(at,i) 
-               j = neighbour(at, i, n, distance = r_ij) 
-               if( r_ij >= this%cutoff ) cycle
+               j = neighbour(at, i, n, distance = r_ij)
+               if( r_ij >= this%bond_cutoff ) cycle
+               if(i_desc(j) == 0) cycle
 
                n_i = n_i + 1
 
-               if( species_map(at%Z(j)) == 0 ) cycle
-
+               if(my_do_descriptor) then
+                  descriptor_out%x(n_i)%ci(1) = i
+                  descriptor_out%x(n_i)%has_data = .true.
+               endif
                i_pow = 0
-               grad_descriptor_i = 0.0_dp
+               do ia = 1, this%n_species*this%n_max
+                  a = rs_index(1,ia)
+                  i_species = rs_index(2,ia)
+                  do jb = 1, ia
+                     b = rs_index(1,jb)
+                     j_species = rs_index(2,jb)
 
-               !SPEED do ia = 1, this%n_species*this%n_max
-               !SPEED    a = rs_index(1,ia) 
-               !SPEED    i_species = rs_index(2,ia)
-               !SPEED    do jb = 1, ia
-               !SPEED       b = rs_index(1,jb)
-               !SPEED       j_species = rs_index(2,jb)
-               !SPEED       do l = 0, this%l_max
-               !SPEED          i_pow = i_pow + 1
-               !SPEED          if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + real( matmul(conjg(grad_fourier_so3(l,a,n_i)%mm),fourier_so3(l,b,j_species)%m) )
-               !SPEED          if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + real( matmul(grad_fourier_so3(l,b,n_i)%mm,conjg(fourier_so3(l,a,i_species)%m)) )
-               !SPEED          !grad_descriptor_i(i_pow,:) = real( matmul(conjg(grad_fourier_so3(l,a,n_i)%mm),fourier_so3(l,b)%m) + matmul(grad_fourier_so3(l,b,n_i)%mm,conjg(fourier_so3(l,a)%m)) )
-               !SPEED          if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
-               !SPEED       enddo !l
-               !SPEED    enddo !jb
-               !SPEED enddo !ia
+                     if(this%diagonal_radial .and. a /= b) cycle
 
-               !SPEED do ia = 1, this%n_species*this%n_max
-               !SPEED    a = rs_index(1,ia) 
-               !SPEED    i_species = rs_index(2,ia)
-               !SPEED    do jb = 1, ia
-               !SPEED       b = rs_index(1,jb)
-               !SPEED       j_species = rs_index(2,jb)
-               !SPEED       do l = 0, this%l_max
-               !SPEED          i_pow = i_pow + 1
-               !SPEED          if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + &
-               !SPEED             matmul(grad_fourier_so3_r(l,a,n_i)%mm,fourier_so3_r(l,b,j_species)%m) + matmul(grad_fourier_so3_i(l,a,n_i)%mm,fourier_so3_i(l,b,j_species)%m)
-               !SPEED          if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + &
-               !SPEED             matmul(grad_fourier_so3_r(l,b,n_i)%mm,fourier_so3_r(l,a,i_species)%m) + matmul(grad_fourier_so3_i(l,b,n_i)%mm,fourier_so3_i(l,a,i_species)%m)
-               !SPEED          if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
-               !SPEED       enddo !l
-               !SPEED    enddo !jb
-               !SPEED enddo !ia
+                     do l = 0, this%l_max
+                        i_pow = i_pow + 1
+                        !SPEED descriptor_i(i_pow) = real( dot_product(fourier_so3(l,a,i_species)%m, fourier_so3(l,b,j_species)%m) )
+                        descriptor_i(i_pow) = dot_product(fourier_so3_r(l,a,i_species,i)%m, fourier_so3_r(l,b,j_species,j)%m) + &
+                           dot_product(fourier_so3_i(l,a,i_species,i)%m, fourier_so3_i(l,b,j_species,j)%m)
+                        if(do_two_l_plus_one) descriptor_i(i_pow) = descriptor_i(i_pow) / sqrt(2.0_dp * l + 1.0_dp)
+                        if( ia /= jb ) descriptor_i(i_pow) = descriptor_i(i_pow) * SQRT_TWO
+                     enddo !l
+                  enddo !jb
+               enddo !ia
 
-               do l=0, this%l_max
-                  do a = 1, this%n_max
-                     do alpha=1, 3
-                	t_g_r(3*(a-1)+alpha, 1:2*l+1) = grad_fourier_so3_r(l,a,n_i)%mm(alpha,-l:l)
-                	t_g_i(3*(a-1)+alpha, 1:2*l+1) = grad_fourier_so3_i(l,a,n_i)%mm(alpha,-l:l)
-                     enddo
-                  enddo
-                  do ia = 1, this%n_species*this%n_max
-                     a = rs_index(1,ia)
-                     i_species = rs_index(2,ia)
-                     
-                     t_f_r(ia, 1:2*l+1) = fourier_so3_r(l,a,i_species)%m(-l:l)
-                     t_f_i(ia, 1:2*l+1) = fourier_so3_i(l,a,i_species)%m(-l:l)
-                  enddo
-                  call dgemm('N','T',this%n_max*3, this%n_max*this%n_species, 2*l+1, 1.0_dp, &
-                     t_g_r(1,1), size(t_g_r,1), t_f_r(1,1), size(t_f_r,1), 0.0_dp, t_g_f_rr(1,1), size(t_g_f_rr, 1))
-                  call dgemm('N','T',this%n_max*3, this%n_max*this%n_species, 2*l+1, 1.0_dp, &
-                     t_g_i(1,1), size(t_g_i,1), t_f_i(1,1), size(t_f_i,1), 0.0_dp, t_g_f_ii(1,1), size(t_g_f_ii, 1))
-                  !t_g_f_rr = matmul(t_g_r,transpose(t_f_r))
-                  !t_g_f_ii = matmul(t_g_i,transpose(t_f_i))
-               
-                  i_pow = l+1
-                  do ia = 1, this%n_species*this%n_max
-                     a = rs_index(1,ia)
-                     i_species = rs_index(2,ia)
-                     do jb = 1, ia !this%n_species*this%n_max !ia
-                        b = rs_index(1,jb)
-                        j_species = rs_index(2,jb)
+               descriptor_i(d) = 0.0_dp
+               norm_descriptor_i = sqrt(dot_product(descriptor_i,descriptor_i))
 
-                        if(this%diagonal_radial .and. a /= b) cycle
-               
-                        if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) + t_g_f_rr(3*(a-1)+1:3*a,jb) + t_g_f_ii(3*(a-1)+1:3*a,jb)
-                        if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) + t_g_f_rr(3*(b-1)+1:3*b,ia) + t_g_f_ii(3*(b-1)+1:3*b,ia)
-               
-
-                        if(do_two_l_plus_one) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) / sqrt(2.0_dp * l + 1.0_dp)
-                        if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
-                        i_pow = i_pow + this%l_max+1
-                     enddo
-                  enddo
-
-                  !do a = 1, this%n_max
-                  !   do b = 1, a
-                  !      grad_descriptor_i(i_pow, 1:3) = t_g_f_rr(3*(a-1)+1:3*a,b) + t_g_f_ii(3*(a-1)+1:3*a,b) + &
-                  !                                      t_g_f_rr(3*(b-1)+1:3*b,a) + t_g_f_ii(3*(b-1)+1:3*b,a)
-                  !      if( a /= b ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
-                  !      i_pow = i_pow + this%l_max+1
-                  !   end do
-                  !end do
-
-               end do !l
-
-               grad_descriptor_i(d, 1:3) = 0.0_dp
-
-               if(.not. this%global) then
-                  if( this%normalise ) then
-                     descriptor_out%x(i_desc_i)%grad_data(:,:,n_i) = grad_descriptor_i / norm_descriptor_i
-                     do k = 1, 3
-                        descriptor_out%x(i_desc_i)%grad_data(:,k,n_i) = descriptor_out%x(i_desc_i)%grad_data(:,k,n_i) - descriptor_i * dot_product(descriptor_i,grad_descriptor_i(:,k)) / norm_descriptor_i**3
-                     enddo
+               if(.not. this%global .and. my_do_descriptor) then
+                  if(this%normalise) then
+                     descriptor_out%x(n_i)%data = descriptor_i / norm_descriptor_i
                   else
-                     descriptor_out%x(i_desc_i)%grad_data(:,:,n_i) = grad_descriptor_i
+                     descriptor_out%x(n_i)%data = descriptor_i
                   endif
 
-                  descriptor_out%x(i_desc_i)%grad_data(:,:,0) = descriptor_out%x(i_desc_i)%grad_data(:,:,0) - descriptor_out%x(i_desc_i)%grad_data(:,:,n_i)
+                  descriptor_out%x(n_i)%data(d) = this%covariance_sigma0
                endif
-            enddo !ni
-	    deallocate(t_f_r, t_f_i)
-	    deallocate(t_g_r, t_g_i)
-	    deallocate(t_g_f_rr, t_g_f_ii)
+            enddo
+         enddo
+      else
+         do i = 1, at%N
 
-         endif
+            if(i_desc(i) == 0) then
+               cycle
+            else
+               i_desc_i = i_desc(i)
+            endif
 
-      enddo ! i
+            if(.not.this%global) then
+               if(my_do_descriptor) then
+                  descriptor_out%x(i_desc_i)%ci(1) = i
+                  descriptor_out%x(i_desc_i)%has_data = .true.
+               endif
+               if(my_do_grad_descriptor) then
+                  descriptor_out%x(i_desc_i)%ii(0) = i
+                  descriptor_out%x(i_desc_i)%pos(:,0) = at%pos(:,i)
+                  descriptor_out%x(i_desc_i)%has_grad_data(0) = .true.
+               endif
+            endif
+
+            i_pow = 0
+            do ia = 1, this%n_species*this%n_max
+               a = rs_index(1,ia)
+               i_species = rs_index(2,ia)
+               do jb = 1, ia
+                  b = rs_index(1,jb)
+                  j_species = rs_index(2,jb)
+
+                  if(this%diagonal_radial .and. a /= b) cycle
+
+                  do l = 0, this%l_max
+                     i_pow = i_pow + 1
+                     !SPEED descriptor_i(i_pow) = real( dot_product(fourier_so3(l,a,i_species)%m, fourier_so3(l,b,j_species)%m) )
+                     descriptor_i(i_pow) = dot_product(fourier_so3_r(l,a,i_species,i)%m, fourier_so3_r(l,b,j_species,i)%m) + &
+                        dot_product(fourier_so3_i(l,a,i_species,i)%m, fourier_so3_i(l,b,j_species,i)%m)
+                     if(do_two_l_plus_one) descriptor_i(i_pow) = descriptor_i(i_pow) / sqrt(2.0_dp * l + 1.0_dp)
+                     if( ia /= jb ) descriptor_i(i_pow) = descriptor_i(i_pow) * SQRT_TWO
+                  enddo !l
+               enddo !jb
+            enddo !ia
+
+            descriptor_i(d) = 0.0_dp
+            norm_descriptor_i = sqrt(dot_product(descriptor_i,descriptor_i))
+
+            if(.not. this%global .and. my_do_descriptor) then
+               if(this%normalise) then
+                  descriptor_out%x(i_desc_i)%data = descriptor_i / norm_descriptor_i
+               else
+                  descriptor_out%x(i_desc_i)%data = descriptor_i
+               endif
+
+               descriptor_out%x(i_desc_i)%data(d) = this%covariance_sigma0
+            endif
+
+            if(my_do_grad_descriptor) then
+   ! soap_calc 33 takes 0.047 s
+               allocate(t_g_r(this%n_max*3, 2*this%l_max+1), t_g_i(this%n_max*3, 2*this%l_max+1))
+               allocate(t_f_r(this%n_max*this%n_species, 2*this%l_max+1), t_f_i(this%n_max*this%n_species, 2*this%l_max+1))
+               allocate(t_g_f_rr(this%n_max*3, this%n_max*this%n_species), t_g_f_ii(this%n_max*3, this%n_max*this%n_species))
+               !do n_i = 1, n_neighbours(at,i,max_dist=this%cutoff) 
+
+               n_i = 0
+               do n = 1, n_neighbours(at,i) 
+                  j = neighbour(at, i, n, distance = r_ij) 
+                  if( r_ij >= this%cutoff ) cycle
+
+                  n_i = n_i + 1
+
+                  if( species_map(at%Z(j)) == 0 ) cycle
+
+                  i_pow = 0
+                  grad_descriptor_i = 0.0_dp
+
+                  !SPEED do ia = 1, this%n_species*this%n_max
+                  !SPEED    a = rs_index(1,ia) 
+                  !SPEED    i_species = rs_index(2,ia)
+                  !SPEED    do jb = 1, ia
+                  !SPEED       b = rs_index(1,jb)
+                  !SPEED       j_species = rs_index(2,jb)
+                  !SPEED       do l = 0, this%l_max
+                  !SPEED          i_pow = i_pow + 1
+                  !SPEED          if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + real( matmul(conjg(grad_fourier_so3(l,a,n_i)%mm),fourier_so3(l,b,j_species)%m) )
+                  !SPEED          if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + real( matmul(grad_fourier_so3(l,b,n_i)%mm,conjg(fourier_so3(l,a,i_species)%m)) )
+                  !SPEED          !grad_descriptor_i(i_pow,:) = real( matmul(conjg(grad_fourier_so3(l,a,n_i)%mm),fourier_so3(l,b)%m) + matmul(grad_fourier_so3(l,b,n_i)%mm,conjg(fourier_so3(l,a)%m)) )
+                  !SPEED          if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
+                  !SPEED       enddo !l
+                  !SPEED    enddo !jb
+                  !SPEED enddo !ia
+
+                  !SPEED do ia = 1, this%n_species*this%n_max
+                  !SPEED    a = rs_index(1,ia) 
+                  !SPEED    i_species = rs_index(2,ia)
+                  !SPEED    do jb = 1, ia
+                  !SPEED       b = rs_index(1,jb)
+                  !SPEED       j_species = rs_index(2,jb)
+                  !SPEED       do l = 0, this%l_max
+                  !SPEED          i_pow = i_pow + 1
+                  !SPEED          if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + &
+                  !SPEED             matmul(grad_fourier_so3_r(l,a,n_i)%mm,fourier_so3_r(l,b,j_species)%m) + matmul(grad_fourier_so3_i(l,a,n_i)%mm,fourier_so3_i(l,b,j_species)%m)
+                  !SPEED          if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow,:) = grad_descriptor_i(i_pow,:) + &
+                  !SPEED             matmul(grad_fourier_so3_r(l,b,n_i)%mm,fourier_so3_r(l,a,i_species)%m) + matmul(grad_fourier_so3_i(l,b,n_i)%mm,fourier_so3_i(l,a,i_species)%m)
+                  !SPEED          if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
+                  !SPEED       enddo !l
+                  !SPEED    enddo !jb
+                  !SPEED enddo !ia
+
+                  do l=0, this%l_max
+                     do a = 1, this%n_max
+                        do alpha=1, 3
+                           t_g_r(3*(a-1)+alpha, 1:2*l+1) = grad_fourier_so3_r(l,a,n_i,i)%mm(alpha,-l:l)
+                           t_g_i(3*(a-1)+alpha, 1:2*l+1) = grad_fourier_so3_i(l,a,n_i,i)%mm(alpha,-l:l)
+                        enddo
+                     enddo
+                     do ia = 1, this%n_species*this%n_max
+                        a = rs_index(1,ia)
+                        i_species = rs_index(2,ia)
+                        
+                        t_f_r(ia, 1:2*l+1) = fourier_so3_r(l,a,i_species,i)%m(-l:l)
+                        t_f_i(ia, 1:2*l+1) = fourier_so3_i(l,a,i_species,i)%m(-l:l)
+                     enddo
+                     call dgemm('N','T',this%n_max*3, this%n_max*this%n_species, 2*l+1, 1.0_dp, &
+                        t_g_r(1,1), size(t_g_r,1), t_f_r(1,1), size(t_f_r,1), 0.0_dp, t_g_f_rr(1,1), size(t_g_f_rr, 1))
+                     call dgemm('N','T',this%n_max*3, this%n_max*this%n_species, 2*l+1, 1.0_dp, &
+                        t_g_i(1,1), size(t_g_i,1), t_f_i(1,1), size(t_f_i,1), 0.0_dp, t_g_f_ii(1,1), size(t_g_f_ii, 1))
+                     !t_g_f_rr = matmul(t_g_r,transpose(t_f_r))
+                     !t_g_f_ii = matmul(t_g_i,transpose(t_f_i))
+                  
+                     i_pow = l+1
+                     do ia = 1, this%n_species*this%n_max
+                        a = rs_index(1,ia)
+                        i_species = rs_index(2,ia)
+                        do jb = 1, ia !this%n_species*this%n_max !ia
+                           b = rs_index(1,jb)
+                           j_species = rs_index(2,jb)
+
+                           if(this%diagonal_radial .and. a /= b) cycle
+                  
+                           if(at%Z(j) == this%species_Z(i_species) .or. this%species_Z(i_species)==0) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) + t_g_f_rr(3*(a-1)+1:3*a,jb) + t_g_f_ii(3*(a-1)+1:3*a,jb)
+                           if(at%Z(j) == this%species_Z(j_species) .or. this%species_Z(j_species)==0) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) + t_g_f_rr(3*(b-1)+1:3*b,ia) + t_g_f_ii(3*(b-1)+1:3*b,ia)
+                  
+
+                           if(do_two_l_plus_one) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) / sqrt(2.0_dp * l + 1.0_dp)
+                           if( ia /= jb ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
+                           i_pow = i_pow + this%l_max+1
+                        enddo
+                     enddo
+
+                     !do a = 1, this%n_max
+                     !   do b = 1, a
+                     !      grad_descriptor_i(i_pow, 1:3) = t_g_f_rr(3*(a-1)+1:3*a,b) + t_g_f_ii(3*(a-1)+1:3*a,b) + &
+                     !                                      t_g_f_rr(3*(b-1)+1:3*b,a) + t_g_f_ii(3*(b-1)+1:3*b,a)
+                     !      if( a /= b ) grad_descriptor_i(i_pow, 1:3) = grad_descriptor_i(i_pow, 1:3) * SQRT_TWO
+                     !      i_pow = i_pow + this%l_max+1
+                     !   end do
+                     !end do
+
+                  end do !l
+
+                  grad_descriptor_i(d, 1:3) = 0.0_dp
+
+                  if(.not. this%global) then
+                     if( this%normalise ) then
+                        descriptor_out%x(i_desc_i)%grad_data(:,:,n_i) = grad_descriptor_i / norm_descriptor_i
+                        do k = 1, 3
+                           descriptor_out%x(i_desc_i)%grad_data(:,k,n_i) = descriptor_out%x(i_desc_i)%grad_data(:,k,n_i) - descriptor_i * dot_product(descriptor_i,grad_descriptor_i(:,k)) / norm_descriptor_i**3
+                        enddo
+                     else
+                        descriptor_out%x(i_desc_i)%grad_data(:,:,n_i) = grad_descriptor_i
+                     endif
+
+                     descriptor_out%x(i_desc_i)%grad_data(:,:,0) = descriptor_out%x(i_desc_i)%grad_data(:,:,0) - descriptor_out%x(i_desc_i)%grad_data(:,:,n_i)
+                  endif
+               enddo !ni
+               deallocate(t_f_r, t_f_i)
+               deallocate(t_g_r, t_g_i)
+               deallocate(t_g_f_rr, t_g_f_ii)
+
+            endif
+
+         enddo ! i
+      endif
 !$omp end parallel do
 
       !SPEED if(allocated(fourier_so3)) then
@@ -7759,20 +7855,24 @@ module descriptors_module
 
 !$omp parallel default(none) shared(this, max_n_neigh) private(i_species, a, l, n_i)
       if(allocated(fourier_so3_r)) then
-         do i_species = lbound(fourier_so3_r,3), ubound(fourier_so3_r,3)
-            do a = lbound(fourier_so3_r,2), ubound(fourier_so3_r,2)
-               do l = lbound(fourier_so3_r,1), ubound(fourier_so3_r,1)
-                  deallocate(fourier_so3_r(l,a,i_species)%m)
+         do i = 1, at%N
+            do i_species = lbound(fourier_so3_r,3), ubound(fourier_so3_r,3)
+               do a = lbound(fourier_so3_r,2), ubound(fourier_so3_r,2)
+                  do l = lbound(fourier_so3_r,1), ubound(fourier_so3_r,1)
+                     deallocate(fourier_so3_r(l,a,i_species,i)%m)
+                  enddo
                enddo
             enddo
          enddo
          deallocate(fourier_so3_r)
       endif
       if(allocated(fourier_so3_i)) then
-         do i_species = lbound(fourier_so3_i,3), ubound(fourier_so3_i,3)
-            do a = lbound(fourier_so3_i,2), ubound(fourier_so3_i,2)
-               do l = lbound(fourier_so3_i,1), ubound(fourier_so3_i,1)
-                  deallocate(fourier_so3_i(l,a,i_species)%m)
+         do i = 1, at%N
+            do i_species = lbound(fourier_so3_i,3), ubound(fourier_so3_i,3)
+               do a = lbound(fourier_so3_i,2), ubound(fourier_so3_i,2)
+                  do l = lbound(fourier_so3_i,1), ubound(fourier_so3_i,1)
+                     deallocate(fourier_so3_i(l,a,i_species,i)%m)
+                  enddo
                enddo
             enddo
          enddo
@@ -7804,15 +7904,17 @@ module descriptors_module
       if(allocated(grad_descriptor_i)) deallocate(grad_descriptor_i)
 
         if (allocated(grad_fourier_so3_r)) then ! should really check for grad_fourier_so3_i also
-            do n_i = 1, max_n_neigh
-               do a = 1, this%n_max
-                  do l = 0, this%l_max
-                     !SPEED deallocate(grad_fourier_so3(l,a,n_i)%mm)
-                     if(allocated(grad_fourier_so3_r(l,a,n_i)%mm)) deallocate(grad_fourier_so3_r(l,a,n_i)%mm)
-                     if(allocated(grad_fourier_so3_i(l,a,n_i)%mm)) deallocate(grad_fourier_so3_i(l,a,n_i)%mm)
-                  enddo
-               enddo
-            enddo
+           do i = 1, at%N
+              do n_i = 1, max_n_neigh
+                 do a = 1, this%n_max
+                    do l = 0, this%l_max
+                       !SPEED deallocate(grad_fourier_so3(l,a,n_i)%mm)
+                       if(allocated(grad_fourier_so3_r(l,a,n_i,i)%mm)) deallocate(grad_fourier_so3_r(l,a,n_i,i)%mm)
+                       if(allocated(grad_fourier_so3_i(l,a,n_i,i)%mm)) deallocate(grad_fourier_so3_i(l,a,n_i,i)%mm)
+                    enddo
+                 enddo
+              enddo
+           enddo
         endif
         !SPEED deallocate(grad_fourier_so3)
         if (allocated(grad_fourier_so3_r)) deallocate(grad_fourier_so3_r)
@@ -11165,7 +11267,8 @@ call print("mask present ? "//present(mask))
       integer, intent(out), optional :: n_index
       integer, optional, intent(out) :: error  
 
-      integer :: i
+      integer :: i, n, j
+      real(dp) :: r_ij
   
       INIT_ERROR(error)  
   
@@ -11181,8 +11284,17 @@ call print("mask present ? "//present(mask))
          if(present(mask)) then
             if(.not. mask(i)) cycle
          endif
-         n_descriptors = n_descriptors + 1
-         n_cross = n_cross + n_neighbours(at,i,max_dist=this%cutoff) + 1
+         if( this%bond ) then
+            do n = 1, n_neighbours(at,i)
+               j = neighbour(at,i,n,distance=r_ij)
+               if( r_ij > this%bond_cutoff) cycle
+               if( .not. any( at%Z(j) == this%Z ) .and. .not. any(this%Z == 0) ) cycle
+               n_descriptors = n_descriptors + 1
+            enddo
+         else
+            n_descriptors = n_descriptors + 1
+            n_cross = n_cross + n_neighbours(at,i,max_dist=this%cutoff) + 1
+         endif
       enddo
   
       if(this%global) then
