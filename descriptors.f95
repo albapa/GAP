@@ -379,7 +379,7 @@ module descriptors_module
       integer :: cutoff_dexp
       real(dp) :: cutoff_scale
       real(dp) :: cutoff_rate
-      integer :: l_max, n_max, n_Z, n_species
+      integer :: l_max, n_max, n_Z, n_species, Z2
       integer, dimension(:), allocatable :: species_Z, Z
       real(dp), dimension(:), allocatable :: r_basis
       real(dp), dimension(:,:), allocatable :: transform_basis,cholesky_overlap_basis
@@ -2493,6 +2493,7 @@ module descriptors_module
       call param_register(params, 'basis_error_exponent', '10.0', basis_error_exponent, help_string="10^(-basis_error_exponent) is the max difference between the target and the expanded function")
 
       call param_register(params, 'n_Z', '1', this%n_Z, help_string="How many different types of central atoms to consider")
+      call param_register(params, 'Z2', '0', this%Z2, help_string="Other atoms ID")
       call param_register(params, 'n_species', '1', this%n_species, has_value_target=has_n_species, help_string="Number of species for the descriptor")
       call param_register(params, 'species_Z', '', species_Z_str, has_value_target=has_species_Z, help_string="Atomic number of species")
       call param_register(params, 'xml_version', '1426512068', xml_version, help_string="Version of GAP the XML potential file was created")
@@ -2638,6 +2639,7 @@ module descriptors_module
 
       this%n_max = 0
       this%n_Z = 0
+      this%Z2 = 0
       this%n_species = 0
 
       if(allocated(this%r_basis)) deallocate(this%r_basis)
@@ -7134,7 +7136,7 @@ module descriptors_module
          n_descriptors, n_cross, i_species, j_species, ia, jb, i_desc_i, &
          xml_version, sum_l_n_neighbours, i_pair, i_pair_i, n_index
       integer, dimension(3) :: shift_ij
-      integer, dimension(:), allocatable :: i_desc
+      integer, dimension(:), allocatable :: i_desc, j_desc
       integer, dimension(:,:), allocatable :: rs_index
       real(dp) :: r_ij, arg_bess, mo_spher_bess_fi_ki_l, mo_spher_bess_fi_ki_lm, mo_spher_bess_fi_ki_lmm, mo_spher_bess_fi_ki_lp, &
          exp_p, exp_m, f_cut, df_cut, norm_descriptor_i, radial_decay, dradial_decay, norm_radial_decay
@@ -7238,7 +7240,7 @@ module descriptors_module
       endif
 
       allocate(descriptor_out%x(n_descriptors))
-      allocate(i_desc(at%N))
+      allocate(i_desc(at%N),j_desc(at%N))
 
       max_n_neigh = 0
       do n_i = 1, at%N
@@ -7316,6 +7318,16 @@ module descriptors_module
          i_desc(i) = i_desc_i
       enddo ! i = 1, at%N
 
+      j_desc = 0
+      i_desc_i = 0
+      do i = 1, at%N
+
+         if( at%Z(i) == this%Z2 .or. this%Z2 == 0 ) then
+            i_desc_i = i_desc_i + 1
+            j_desc(i) = i_desc_i
+         endif
+      enddo ! i = 1, at%N
+
       if(.not. this%global) then ! atomic SOAP
          n_i = 0
          do i = 1, at%N
@@ -7327,7 +7339,7 @@ module descriptors_module
                do n = 1, n_neighbours(at,i)
                   j = neighbour(at, i, n, distance = r_ij)
                   if( r_ij >= this%bond_cutoff ) cycle
-                  if( i_desc(j) == 0 ) cycle
+                  if( j_desc(j) == 0 ) cycle
 
                   n_i = n_i + 1
                   allocate(descriptor_out%x(n_i)%data(d))
@@ -7370,8 +7382,6 @@ module descriptors_module
          global_fourier_so3_i_array((this%l_max+1)**2 * this%n_max * this%n_species), &
          global_grad_fourier_so3_r_array( count(i_desc/=0) ), &
          global_grad_fourier_so3_i_array( count(i_desc/=0) ) )
-
-
 
       if(this%global) then
          if(my_do_descriptor) then
@@ -7428,7 +7438,7 @@ module descriptors_module
          global_fourier_so3_i_array = 0.0_dp
       endif ! this%global 
 
-!$omp parallel do schedule(dynamic) default(none) shared(this, at, descriptor_out, my_do_descriptor, my_do_grad_descriptor, d, i_desc, species_map, rs_index, do_two_l_plus_one) &
+!$omp parallel do schedule(dynamic) default(none) shared(this, at, descriptor_out, my_do_descriptor, my_do_grad_descriptor, d, i_desc, j_desc, species_map, rs_index, do_two_l_plus_one) &
 !$omp shared(global_grad_fourier_so3_r_array, global_grad_fourier_so3_i_array, norm_radial_decay) &
 !$omp private(i, j, i_species, j_species, a, b, l, m, n, n_i, r_ij, u_ij, d_ij, shift_ij, i_pow, i_coeff, ia, jb, alpha, i_desc_i) &
 !$omp private(c_tmp) &
@@ -7615,7 +7625,7 @@ module descriptors_module
             do n = 1, n_neighbours(at,i) 
                j = neighbour(at, i, n, distance = r_ij)
                if( r_ij >= this%bond_cutoff ) cycle
-               if(i_desc(j) == 0) cycle
+               if(j_desc(j) == 0) cycle
 
                n_i = n_i + 1
 
@@ -11288,7 +11298,7 @@ call print("mask present ? "//present(mask))
             do n = 1, n_neighbours(at,i)
                j = neighbour(at,i,n,distance=r_ij)
                if( r_ij > this%bond_cutoff) cycle
-               if( .not. any( at%Z(j) == this%Z ) .and. .not. any(this%Z == 0) ) cycle
+               if( .not. ( at%Z(j) == this%Z2 ) .and. .not. (this%Z2 == 0) ) cycle
                n_descriptors = n_descriptors + 1
             enddo
          else
