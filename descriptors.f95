@@ -7318,15 +7318,19 @@ module descriptors_module
          i_desc(i) = i_desc_i
       enddo ! i = 1, at%N
 
-      j_desc = 0
-      i_desc_i = 0
-      do i = 1, at%N
+      if( this%bond ) then
+         j_desc = 0
+         i_desc_i = 0
+         do i = 1, at%N
 
-         if( at%Z(i) == this%Z2 .or. this%Z2 == 0 ) then
-            i_desc_i = i_desc_i + 1
-            j_desc(i) = i_desc_i
-         endif
-      enddo ! i = 1, at%N
+            if( at%Z(i) == this%Z2 .or. this%Z2 == 0 ) then
+               i_desc_i = i_desc_i + 1
+               j_desc(i) = i_desc_i
+            endif
+         enddo ! i = 1, at%N
+      else
+         j_desc = i_desc_i
+      endif
 
       if(.not. this%global) then ! atomic SOAP
          n_i = 0
@@ -7448,7 +7452,7 @@ module descriptors_module
 !$omp reduction(+:global_fourier_so3_r_array,global_fourier_so3_i_array)
       do i = 1, at%N
 
-         if(i_desc(i) == 0) then
+         if(i_desc(i) == 0 .and. j_desc(i) == 0) then
             cycle
          else
             i_desc_i = i_desc(i)
@@ -7630,7 +7634,7 @@ module descriptors_module
                n_i = n_i + 1
 
                if(my_do_descriptor) then
-                  descriptor_out%x(n_i)%ci(1) = i
+                  descriptor_out%x(n_i)%ci(:) = (/i,j/)
                   descriptor_out%x(n_i)%has_data = .true.
                endif
                i_pow = 0
@@ -10391,7 +10395,7 @@ module descriptors_module
          RAISE_ERROR("soap_cutoff: descriptor object not initialised", error)
       endif  
   
-      soap_cutoff = this%cutoff
+      soap_cutoff = max(this%cutoff, this%bond_cutoff)
 
    endfunction soap_cutoff
   
@@ -11298,8 +11302,11 @@ call print("mask present ? "//present(mask))
             do n = 1, n_neighbours(at,i)
                j = neighbour(at,i,n,distance=r_ij)
                if( r_ij > this%bond_cutoff) cycle
-               if( .not. ( at%Z(j) == this%Z2 ) .and. .not. (this%Z2 == 0) ) cycle
-               n_descriptors = n_descriptors + 1
+               if( at%Z(j) == this%Z2 .or. this%Z2 == 0 ) then
+                  n_descriptors = n_descriptors + 1
+               endif
+               !if( .not. any( at%Z(j) == this%Z ) .and. .not. any(this%Z == 0) ) cycle
+               !n_descriptors = n_descriptors + 1
             enddo
          else
             n_descriptors = n_descriptors + 1
@@ -11316,6 +11323,8 @@ call print("mask present ? "//present(mask))
                n_index = count( (/(any(at%Z(i)==this%Z),i=1,at%N)/) )
             endif
          endif 
+      elseif(this%bond) then
+         if( present(n_index) ) n_index = 2
       else   
          if( present(n_index) ) n_index = 1
       endif
