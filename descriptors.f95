@@ -44,7 +44,9 @@
 module descriptors_module
 
    use error_module
-   use system_module, only : dp, print, optional_default, system_timer, operator(//), split_string, string_to_int, split_string_simple, inoutput, OUTPUT, PRINT_VERBOSE, PRINT_NERD, ran_normal, system_reseed_rng, system_get_random_seed
+   use system_module, only : dp, print, optional_default, system_timer, operator(//), split_string, &
+       string_to_int, split_string_simple, inoutput, initialise, OUTPUT, PRINT_VERBOSE, PRINT_NERD, &
+       ran_normal, system_reseed_rng, system_get_random_seed
    use linkedlist_module
    use units_module
    use periodictable_module
@@ -64,6 +66,7 @@ module descriptors_module
    use connection_module
    use angular_functions_module
    use gamma_module
+   use spline_module
 
    implicit none
 
@@ -107,6 +110,7 @@ module descriptors_module
    integer, parameter, public :: DT_DISTANCE_NB     = 29
    integer, parameter, public :: DT_SOAP_EXPRESS    = 30
    integer, parameter, public :: DT_SOAP_TURBO      = 31
+   integer, parameter, public :: DT_SOAP_NEW        = 32
 
    integer, parameter :: NP_WATER_DIMER    = 8
    integer, parameter :: NP_A2_DIMER       = 8
@@ -147,6 +151,36 @@ module descriptors_module
       complex(dp), dimension(:,:,:), allocatable :: mm
    endtype cplx_3d
 
+   type radial_value_deriv
+      real(dp), dimension(:,:), allocatable :: value
+      real(dp), dimension(:,:,:), allocatable :: deriv
+   endtype radial_value_deriv
+   type radial_basis
+      type(radial_value_deriv), dimension(:), allocatable :: at
+   endtype radial_basis
+
+   type angular_value_deriv
+      type(cplx_2d), dimension(:), allocatable :: ylm
+      type(cplx_3d), dimension(:), allocatable :: dylm
+   endtype angular_value_deriv
+   type angular_basis
+      integer :: l_max
+      type(angular_value_deriv), dimension(:), allocatable :: at
+   endtype angular_basis
+
+   type radial_type
+      integer :: n
+      type(spline), dimension(:), allocatable :: values
+      integer, dimension(:), allocatable :: l
+   endtype radial_type
+
+   type coefficient_i
+      type(cplx_1d), dimension(:), allocatable :: c
+      type(cplx_2d), dimension(:,:), allocatable :: dc
+   endtype coefficient_i
+   type coefficient_basis
+      type(coefficient_i), dimension(:), allocatable :: at
+   end type coefficient_basis
    !=======================================================================
    !==                begin descriptors
    !=======================================================================
@@ -475,6 +509,16 @@ module descriptors_module
       logical :: initialised = .false., compress = .false.
    endtype soap_turbo
 
+   type soap_new
+      real(dp) :: cutoff
+      real(dp) :: cutoff_transition_width
+
+      type(radial_type) :: radial
+
+      real(dp) :: cutoff_energy
+      logical :: initialised = .false.
+   endtype soap_new
+
 #ifdef DESCRIPTORS_NONCOMMERCIAL
 #include "descriptors_noncommercial_types.inc"
 #endif
@@ -487,7 +531,8 @@ module descriptors_module
         water_dimer, a2_dimer, bond_real_space, power_so3, power_so4, an_monomer, general_dimer, &
         general_trimer, rdf, as_distance_2b, molecule_lo_d, alex,  com_dimer,  distance_nb, &
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
-        ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, soap_turbo, soap_express
+        ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, soap_turbo, soap_express, &
+        soap_new
 #else
    public :: soap, bispectrum_so4, bispectrum_so3, behler, distance_2b, &
         coordination, angle_3b, co_angle_3b, co_distance_2b, cosnx, trihis, water_monomer, &
@@ -495,7 +540,8 @@ module descriptors_module
         rdf, as_distance_2b,  alex,  distance_nb, &
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
         ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, &
-        soap_turbo
+        soap_turbo, &
+        soap_new
 #endif
 
    !=======================================================================
@@ -528,6 +574,7 @@ module descriptors_module
       type(alex)            :: descriptor_alex
       type(distance_Nb)     :: descriptor_distance_Nb
       type(soap_turbo)      :: descriptor_soap_turbo
+      type(soap_new)        :: descriptor_soap_new
 #ifdef DESCRIPTORS_NONCOMMERCIAL
       type(AN_monomer)      :: descriptor_AN_monomer
       type(general_monomer) :: descriptor_general_monomer
@@ -578,13 +625,15 @@ module descriptors_module
       water_monomer_initialise, water_dimer_initialise, A2_dimer_initialise, AB_dimer_initialise, distance_Nb_initialise,  rdf_initialise, as_distance_2b_initialise, alex_initialise, &
       atom_real_space_initialise, power_so3_initialise, power_SO4_initialise, soap_initialise, soap_turbo_initialise, &
       general_monomer_initialise, general_dimer_initialise, general_trimer_initialise,  molecule_lo_d_initialise,  AN_monomer_initialise, &
-      bond_real_space_initialise, transfer_initialise, com_dimer_initialise,  soap_express_initialise
+      bond_real_space_initialise, transfer_initialise, com_dimer_initialise,  soap_express_initialise, &
+      soap_new_initialise
 #else
       module procedure descriptor_initialise, RadialFunction_initialise, fourier_so4_initialise, &
       bispectrum_SO4_initialise, bispectrum_SO3_initialise, behler_initialise, distance_2b_initialise, &
       coordination_initialise, angle_3b_initialise, co_angle_3b_initialise, co_distance_2b_initialise, cosnx_initialise, trihis_initialise, &
       water_monomer_initialise, water_dimer_initialise, A2_dimer_initialise, AB_dimer_initialise, distance_Nb_initialise,  rdf_initialise, as_distance_2b_initialise, alex_initialise, &
-      atom_real_space_initialise, power_so3_initialise, power_SO4_initialise, soap_initialise, soap_turbo_initialise
+      atom_real_space_initialise, power_so3_initialise, power_SO4_initialise, soap_initialise, soap_turbo_initialise, &
+      soap_new_initialise 
 #endif
    endinterface initialise
    public :: initialise
@@ -596,12 +645,13 @@ module descriptors_module
       co_distance_2b_finalise, cosnx_finalise, trihis_finalise, water_monomer_finalise, water_dimer_finalise, rdf_finalise, as_distance_2b_finalise,  alex_finalise, &
       A2_dimer_finalise, AB_dimer_finalise, atom_real_space_finalise, power_so3_finalise, power_SO4_finalise, soap_finalise, distance_Nb_finalise,  soap_turbo_finalise, &
       AN_monomer_finalise, general_monomer_finalise, general_dimer_finalise, general_trimer_finalise,  molecule_lo_d_finalise, com_dimer_finalise, &
-      bond_real_space_finalise, soap_express_finalise
+      bond_real_space_finalise, soap_express_finalise, soap_new_finalise
 #else
       module procedure descriptor_finalise, descriptor_data_finalise, RadialFunction_finalise, fourier_so4_finalise, cplx_2d_array1_finalise, cplx_3d_array2_finalise, &
       bispectrum_SO4_finalise, bispectrum_SO3_finalise, behler_finalise, distance_2b_finalise, coordination_finalise, angle_3b_finalise, co_angle_3b_finalise, &
       co_distance_2b_finalise, cosnx_finalise, trihis_finalise, water_monomer_finalise, water_dimer_finalise, rdf_finalise, as_distance_2b_finalise,  alex_finalise, &
-      A2_dimer_finalise, AB_dimer_finalise, atom_real_space_finalise, power_so3_finalise, power_SO4_finalise, soap_finalise, distance_Nb_finalise, soap_turbo_finalise
+      A2_dimer_finalise, AB_dimer_finalise, atom_real_space_finalise, power_so3_finalise, power_SO4_finalise, soap_finalise, distance_Nb_finalise, soap_turbo_finalise, &
+      soap_new_finalise
 #endif
    endinterface finalise
    public :: finalise
@@ -612,12 +662,13 @@ module descriptors_module
       co_distance_2b_calc, cosnx_calc, trihis_calc, water_monomer_calc, water_dimer_calc, A2_dimer_calc, AB_dimer_calc,  atom_real_space_calc, &
       power_so3_calc, power_SO4_calc, soap_calc, rdf_calc, as_distance_2b_calc, &
       distance_Nb_calc, alex_calc, soap_turbo_calc, &
-      AN_monomer_calc,  soap_express_calc, general_monomer_calc, general_dimer_calc, general_trimer_calc,  molecule_lo_d_calc, com_dimer_calc, bond_real_space_calc
+      AN_monomer_calc,  soap_express_calc, general_monomer_calc, general_dimer_calc, general_trimer_calc,  molecule_lo_d_calc, com_dimer_calc, bond_real_space_calc, &
+      soap_new_calc
 #else
       module procedure descriptor_calc, descriptor_calc_array, bispectrum_SO4_calc, bispectrum_SO3_calc, behler_calc, distance_2b_calc, coordination_calc, angle_3b_calc, co_angle_3b_calc, &
       co_distance_2b_calc, cosnx_calc, trihis_calc, water_monomer_calc, water_dimer_calc, A2_dimer_calc, AB_dimer_calc,  atom_real_space_calc, &
       power_so3_calc, power_SO4_calc, soap_calc, rdf_calc, as_distance_2b_calc, &
-      distance_Nb_calc, alex_calc, soap_turbo_calc
+      distance_Nb_calc, alex_calc, soap_turbo_calc, soap_new_calc
 
 #endif
    endinterface calc
@@ -628,11 +679,13 @@ module descriptors_module
       module procedure descriptor_cutoff, bispectrum_SO4_cutoff, bispectrum_SO3_cutoff, behler_cutoff, distance_2b_cutoff, coordination_cutoff, angle_3b_cutoff, co_angle_3b_cutoff, &
       co_distance_2b_cutoff, cosnx_cutoff, trihis_cutoff, water_monomer_cutoff, water_dimer_cutoff, A2_dimer_cutoff, AB_dimer_cutoff, atom_real_space_cutoff, &
       power_so3_cutoff, power_SO4_cutoff, soap_cutoff, alex_cutoff, distance_Nb_cutoff, rdf_cutoff, as_distance_2b_cutoff, soap_turbo_cutoff, &
-      molecule_lo_d_cutoff, com_dimer_cutoff, soap_express_cutoff, AN_monomer_cutoff, general_monomer_cutoff, general_dimer_cutoff, general_trimer_cutoff,  bond_real_space_cutoff
+      molecule_lo_d_cutoff, com_dimer_cutoff, soap_express_cutoff, AN_monomer_cutoff, general_monomer_cutoff, general_dimer_cutoff, general_trimer_cutoff,  bond_real_space_cutoff, &
+      soap_new_cutoff
 #else
       module procedure descriptor_cutoff, bispectrum_SO4_cutoff, bispectrum_SO3_cutoff, behler_cutoff, distance_2b_cutoff, coordination_cutoff, angle_3b_cutoff, co_angle_3b_cutoff, &
       co_distance_2b_cutoff, cosnx_cutoff, trihis_cutoff, water_monomer_cutoff, water_dimer_cutoff, A2_dimer_cutoff, AB_dimer_cutoff, atom_real_space_cutoff, &
-      power_so3_cutoff, power_SO4_cutoff, soap_cutoff, alex_cutoff, distance_Nb_cutoff, rdf_cutoff, as_distance_2b_cutoff, soap_turbo_cutoff
+      power_so3_cutoff, power_SO4_cutoff, soap_cutoff, alex_cutoff, distance_Nb_cutoff, rdf_cutoff, as_distance_2b_cutoff, soap_turbo_cutoff, &
+      soap_new_cutoff
 #endif
    endinterface cutoff
    public :: cutoff
@@ -643,12 +696,13 @@ module descriptors_module
       co_distance_2b_sizes, cosnx_sizes, trihis_sizes, water_monomer_sizes, water_dimer_sizes, A2_dimer_sizes, AB_dimer_sizes, atom_real_space_sizes, &
       power_so3_sizes, power_SO4_sizes, soap_sizes,  rdf_sizes, as_distance_2b_sizes, &
       alex_sizes, distance_Nb_sizes, soap_turbo_sizes, &
-      molecule_lo_d_sizes, com_dimer_sizes,  soap_express_sizes, AN_monomer_sizes, general_monomer_sizes, general_dimer_sizes, general_trimer_sizes,  bond_real_space_sizes
+      molecule_lo_d_sizes, com_dimer_sizes,  soap_express_sizes, AN_monomer_sizes, general_monomer_sizes, general_dimer_sizes, general_trimer_sizes,  bond_real_space_sizes, &
+      soap_new_sizes
 #else
       module procedure descriptor_sizes, bispectrum_SO4_sizes, bispectrum_SO3_sizes, behler_sizes, distance_2b_sizes, coordination_sizes, angle_3b_sizes, co_angle_3b_sizes, &
       co_distance_2b_sizes, cosnx_sizes, trihis_sizes, water_monomer_sizes, water_dimer_sizes, A2_dimer_sizes, AB_dimer_sizes, atom_real_space_sizes, &
       power_so3_sizes, power_SO4_sizes, soap_sizes,  rdf_sizes, as_distance_2b_sizes, &
-      alex_sizes, distance_Nb_sizes, soap_turbo_sizes
+      alex_sizes, distance_Nb_sizes, soap_turbo_sizes, soap_new_sizes
 #endif
    endinterface descriptor_sizes
    public :: descriptor_sizes
@@ -677,7 +731,7 @@ module descriptors_module
          is_co_angle_3b, is_co_distance_2b, is_cosnx, is_trihis, is_water_monomer, is_water_dimer, is_A2_dimer, &
          is_AB_dimer, is_bond_real_space, is_atom_real_space, is_power_so3, is_power_so4, is_soap, &
          is_AN_monomer, is_general_monomer, is_general_dimer, is_general_trimer, is_rdf, is_as_distance_2b, &
-         is_molecule_lo_d, is_alex, is_com_dimer, is_distance_Nb, is_soap_express, is_soap_turbo
+         is_molecule_lo_d, is_alex, is_com_dimer, is_distance_Nb, is_soap_express, is_soap_turbo, is_soap_new
 
       INIT_ERROR(error)
 
@@ -713,6 +767,7 @@ module descriptors_module
       call param_register(params, 'distance_Nb', 'false', is_distance_Nb, help_string="Type of descriptor is distance_Nb.")
       call param_register(params, 'soap_express', 'false', is_soap_express, help_string="Type of descriptor is soap_express.")
       call param_register(params, 'soap_turbo', 'false', is_soap_turbo, help_string="Type of descriptor is soap_turbo.")
+      call param_register(params, 'soap_new', 'false', is_soap_new, help_string="Type of descriptor is soap_new.")
 
       if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='descriptor_initialise args_str')) then
          RAISE_ERROR("descriptor_initialise failed to parse args_str='"//trim(args_str)//"'", error)
@@ -722,7 +777,7 @@ module descriptors_module
       if (count( (/is_bispectrum_so4, is_bispectrum_so3, is_behler, is_distance_2b, is_coordination, is_angle_3b, is_co_angle_3b, is_co_distance_2b, &
       is_cosnx, is_trihis, is_water_monomer, is_water_dimer, is_A2_dimer, is_AB_dimer, is_bond_real_space, is_atom_real_space, is_power_so3, is_power_so4, &
       is_soap, is_AN_monomer, is_general_monomer, is_general_dimer, is_general_trimer, is_rdf, is_as_distance_2b, is_molecule_lo_d, is_alex, is_com_dimer, &
-      is_distance_Nb, is_soap_express, is_soap_turbo /) ) /= 1) then
+      is_distance_Nb, is_soap_express, is_soap_turbo, is_soap_new /) ) /= 1) then
          RAISE_ERROR("descriptor_initialise found too few or too many IP Model types args_str='"//trim(args_str)//"'", error)
       endif
 
@@ -790,6 +845,8 @@ module descriptors_module
          get_descriptor_type = DT_SOAP_EXPRESS
       elseif( is_soap_turbo ) then
          get_descriptor_type = DT_SOAP_TURBO
+      elseif( is_soap_new ) then
+         get_descriptor_type = DT_SOAP_NEW
       endif
 
    endfunction get_descriptor_type
@@ -852,6 +909,8 @@ module descriptors_module
          call initialise(this%descriptor_distance_Nb,args_str,error)
       case(DT_SOAP_TURBO)
          call initialise(this%descriptor_soap_turbo,args_str,error)
+      case(DT_SOAP_NEW)
+         call initialise(this%descriptor_soap_new,args_str,error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
       case(DT_BOND_REAL_SPACE)
          call initialise(this%descriptor_bond_real_space,args_str,error)
@@ -925,6 +984,8 @@ module descriptors_module
             call finalise(this%descriptor_alex,error)
          case(DT_DISTANCE_Nb)
             call finalise(this%descriptor_distance_Nb,error)
+         case(DT_SOAP_NEW)
+            call finalise(this%descriptor_soap_new,error)
 #ifdef DESCRIPTOR_NONCOMMERCIAL
          case(DT_COM_DIMER)
             call finalise(this%descriptor_com_dimer,error)
@@ -1005,6 +1066,8 @@ module descriptors_module
          case(DT_DISTANCE_NB)
             call descriptor_atomic_MPI_setup(at,mpi,mpi_mask,error)
          case(DT_SOAP_TURBO)
+            call descriptor_atomic_MPI_setup(at,mpi,mpi_mask,error)
+         case(DT_SOAP_NEW)
             call descriptor_atomic_MPI_setup(at,mpi,mpi_mask,error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
          case(DT_MOLECULE_LO_D)
@@ -3436,6 +3499,114 @@ module descriptors_module
 
    endsubroutine soap_turbo_sizes
 
+   subroutine soap_new_initialise(this,args_str,error)
+      type(soap_new), intent(inout) :: this
+      character(len=*), intent(in) :: args_str
+      integer, optional, intent(out) :: error
+
+      integer, parameter :: n_max = 20, l_max = 19, n_r = 201
+      real(dp) :: energy, weight
+      real(dp), dimension(:), allocatable :: r,f
+      integer :: l, n, n_radial
+      type(InOutput) :: my_file
+      character(len=STRING_LENGTH) :: my_filename
+
+      type(Dictionary) :: params
+
+      INIT_ERROR(error)
+
+      call finalise(this)
+
+      call initialise(params)
+      call param_register(params, 'cutoff', PARAM_MANDATORY, this%cutoff, help_string="Cutoff for soap-type descriptors")
+      call param_register(params, 'cutoff_transition_width', '0.50', this%cutoff_transition_width, help_string="Cutoff transition width for soap-type descriptors")
+      call param_register(params, 'cutoff_energy', '3.0', this%cutoff_energy, help_string="Cutoff transition width for soap-type descriptors")
+
+      if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_new_initialise args_str')) then
+         RAISE_ERROR("soap_new_initialise failed to parse args_str='"//trim(args_str)//"'", error)
+      endif
+      call finalise(params)
+
+      n_radial = 0
+      do l = 0, l_max
+         do n = 1, n_max
+            if(n - l - 1 < 0) cycle
+            write(my_filename,'(a,i2.2,a,i2.2)') "energy_",n,"_",l
+            call initialise(my_file,my_filename)
+            read(my_file%unit,*) energy
+            call finalise(my_file)
+            if(energy < this%cutoff_energy) &
+               n_radial = n_radial + 1
+         enddo
+      enddo
+
+      this%radial%n = n_radial
+
+      allocate(r(n_r),f(n_r))
+
+      allocate(this%radial%values(this%radial%n))
+      allocate(this%radial%l(this%radial%n))
+
+      call initialise(my_file,"r")
+      call read_ascii(my_file, r)
+      call finalise(my_file)
+
+      r = r / 10.0_dp * this%cutoff
+
+      n_radial = 0
+      do l = 0, l_max
+         do n = 1, n_max
+            if(n - l - 1 < 0) cycle
+
+            write(my_filename,'(a,i2.2,a,i2.2)') "energy_",n,"_",l
+            call initialise(my_file,my_filename)
+            read(my_file%unit,*) energy
+            call finalise(my_file)
+            if(energy < this%cutoff_energy) then
+               n_radial = n_radial + 1
+               this%radial%l(n_radial) = l
+
+               write(my_filename,'(a,i2.2,a,i2.2)') "radial_",n,"_",l
+               call initialise(my_file,my_filename)
+               call read_ascii(my_file, f)
+               call finalise(my_file)
+
+               weight = cos_cutoff_function(energy,this%cutoff_energy)
+               f = f * weight
+               call initialise(this%radial%values(n_radial),r,f,0.0_dp,0.0_dp)
+            endif
+         enddo
+      enddo
+
+      this%initialised = .true.
+
+   endsubroutine soap_new_initialise
+
+   subroutine soap_new_finalise(this,error)
+      type(soap_new), intent(inout) :: this
+      integer, optional, intent(out) :: error
+
+      integer :: n_radial
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+      this%cutoff = 0.0_dp
+      this%cutoff_transition_width = 0.0_dp
+
+      if(allocated(this%radial%values)) then
+         do n_radial = 1, this%radial%n
+            call finalise(this%radial%values(n_radial))
+         enddo
+         deallocate(this%radial%values)
+      endif
+      if(allocated(this%radial%l)) deallocate(this%radial%l)
+      this%radial%n = 0
+
+      this%initialised = .false.
+
+   endsubroutine soap_new_finalise
+
    subroutine descriptor_str_add_species(this,species,descriptor_str,error)
       character(len=*), intent(in) :: this
       integer, dimension(:), intent(in) :: species
@@ -3470,7 +3641,7 @@ module descriptors_module
          enddo
 
          deallocate(w)
-      case(DT_SOAP)
+      case(DT_SOAP,DT_SOAP_NEW)
          allocate(descriptor_str(n_species))
          do i = 1, n_species
             descriptor_str(i) = trim(this)//" n_species="//n_species//" Z="//species(i)//" species_Z={"//species//"}"
@@ -3636,6 +3807,8 @@ module descriptors_module
             call calc(this%descriptor_distance_Nb,at,descriptor_out,do_descriptor,do_grad_descriptor,args_str,error)
          case(DT_SOAP_TURBO)
             call calc(this%descriptor_soap_turbo,at,descriptor_out,do_descriptor,do_grad_descriptor,args_str,error)
+         case(DT_SOAP_NEW)
+            call calc(this%descriptor_soap_new,at,descriptor_out,do_descriptor,do_grad_descriptor,args_str,error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
          case(DT_BOND_REAL_SPACE)
             call calc(this%descriptor_bond_real_space,at,descriptor_out,do_descriptor,do_grad_descriptor,args_str,error)
@@ -10304,6 +10477,109 @@ module descriptors_module
 
    endsubroutine soap_turbo_calc
 
+   subroutine soap_new_calc(this,at,descriptor_out,do_descriptor,do_grad_descriptor,args_str,error)
+
+      type(soap_new), intent(in) :: this
+      type(atoms), intent(in) :: at
+      type(descriptor_data), intent(out) :: descriptor_out
+      logical, intent(in), optional :: do_descriptor, do_grad_descriptor
+      character(len=*), intent(in), optional :: args_str
+      integer, optional, intent(out) :: error
+
+      type(Dictionary) :: params
+      character(STRING_LENGTH) :: atom_mask_name
+      logical :: has_atom_mask_name
+      logical, dimension(:), pointer :: atom_mask_pointer
+
+      logical :: my_do_descriptor, my_do_grad_descriptor
+
+      type(radial_basis) :: radial
+      type(angular_basis) :: angular
+      type(coefficient_basis) :: coeff
+
+      integer :: d, i, j, n, n_index, l_n_neighbours
+      integer, dimension(3) :: s_ij
+      real(dp) :: r_ij
+
+      INIT_ERROR(error)
+
+      call system_timer('soap_new_calc')
+
+      if(.not. this%initialised) then
+         RAISE_ERROR("soap_new_calc: descriptor object not initialised", error)
+      endif
+
+      my_do_descriptor = optional_default(.false., do_descriptor)
+      my_do_grad_descriptor = optional_default(.false., do_grad_descriptor)
+
+      d = soap_new_power_dimension(this,error)
+      n_index = 1
+      allocate(descriptor_out%x(at%N))
+
+      do i = 1, at%N
+         if(my_do_descriptor) then
+            allocate(descriptor_out%x(i)%data(d))
+            !slow, no need
+            !descriptor_out%x(i_desc_i)%data = 0.0_dp
+            allocate(descriptor_out%x(i)%ci(n_index))
+            descriptor_out%x(i)%has_data = .false.
+            descriptor_out%x(i)%covariance_cutoff = 1.0_dp
+         endif
+         if(my_do_grad_descriptor) then
+            l_n_neighbours = n_neighbours(at,i) !,max_dist=this%cutoff)
+
+            allocate(descriptor_out%x(i)%grad_data(d,3,0:l_n_neighbours))
+            allocate(descriptor_out%x(i)%ii(0:l_n_neighbours))
+            allocate(descriptor_out%x(i)%pos(3,0:l_n_neighbours))
+            allocate(descriptor_out%x(i)%has_grad_data(0:l_n_neighbours))
+            ! slow, no need
+            ! descriptor_out%x(i_desc_i)%grad_data = 0.0_dp
+            descriptor_out%x(i)%grad_data(:,:,0) = 0.0_dp
+            descriptor_out%x(i)%ii = 0
+            descriptor_out%x(i)%pos = 0.0_dp
+            descriptor_out%x(i)%has_grad_data = .false.
+
+            allocate(descriptor_out%x(i)%grad_covariance_cutoff(3,0:l_n_neighbours))
+            descriptor_out%x(i)%grad_covariance_cutoff = 0.0_dp
+         endif
+      enddo
+
+      call soap_new_radial(this,at,radial,my_do_grad_descriptor,error)
+      call soap_new_angular(this,at,angular,my_do_grad_descriptor,error)
+
+      call soap_new_coefficient(this,at,radial,angular,my_do_grad_descriptor,&
+          coeff,error=error)
+
+      do i = 1, at%N
+         descriptor_out%x(i)%ci(1) = i
+         descriptor_out%x(i)%has_data = .true.
+         call soap_new_power(this,coeff%at(i),coeff%at(i),my_do_grad_descriptor, &
+             descriptor_out%x(i),error)
+
+
+         if(my_do_grad_descriptor) then
+            descriptor_out%x(i)%ii(0) = i
+            descriptor_out%x(i)%pos(:,0) = at%pos(:,i)
+            descriptor_out%x(i)%has_grad_data(0) = .true.
+
+            do n = 1, n_neighbours(at,i)
+               j = neighbour(at, i, n, distance=r_ij, shift=s_ij)
+               if( r_ij < this%cutoff ) then
+                  descriptor_out%x(i)%ii(n) = j
+                  descriptor_out%x(i)%pos(:,n) = at%pos(:,j) + matmul(at%lattice,s_ij)
+                  descriptor_out%x(i)%has_grad_data(n) = .true.
+               endif
+            enddo
+         endif
+      enddo
+
+      call radial_finalise(radial)
+      call angular_finalise(angular)
+      call coefficient_finalise(coeff)
+      call system_timer('soap_new_calc')
+
+   end subroutine soap_new_calc
+
    subroutine distance_Nb_calc_get_clusters(this,at,atoms_in_descriptors,n_descriptors,mask,error)
 
       type(distance_Nb), intent(in) :: this
@@ -10624,6 +10900,8 @@ module descriptors_module
             descriptor_dimensions = distance_Nb_dimensions(this%descriptor_distance_Nb,error)
          case(DT_SOAP_TURBO)
             descriptor_dimensions = soap_turbo_dimensions(this%descriptor_soap_turbo,error)
+         case(DT_SOAP_NEW)
+            descriptor_dimensions = soap_new_dimensions(this%descriptor_soap_new,error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
          case(DT_BOND_REAL_SPACE)
             descriptor_dimensions = bond_real_space_dimensions(this%descriptor_bond_real_space,error)
@@ -11034,6 +11312,22 @@ module descriptors_module
 
    endfunction distance_Nb_dimensions
 
+   function soap_new_dimensions(this,error) result(i)
+      type(soap_new), intent(in) :: this
+      integer, optional, intent(out) :: error
+
+      integer :: i
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) then
+         RAISE_ERROR("soap_new_dimensions: descriptor object not initialised", error)
+      endif
+
+      i = soap_new_power_dimension(this,error)
+
+   endfunction soap_new_dimensions
+
    function descriptor_cutoff(this,error)
       type(descriptor), intent(in) :: this
       integer, optional, intent(out) :: error
@@ -11086,6 +11380,8 @@ module descriptors_module
             descriptor_cutoff = cutoff(this%descriptor_distance_Nb,error)
          case(DT_SOAP_TURBO)
             descriptor_cutoff = cutoff(this%descriptor_soap_turbo,error)
+         case(DT_SOAP_NEW)
+            descriptor_cutoff = cutoff(this%descriptor_soap_new,error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
          case(DT_BOND_REAL_SPACE)
             descriptor_cutoff = cutoff(this%descriptor_bond_real_space,error)
@@ -11458,6 +11754,20 @@ module descriptors_module
 
    endfunction soap_turbo_cutoff
 
+   function soap_new_cutoff(this,error)
+      type(soap_new), intent(in) :: this
+      integer, optional, intent(out) :: error
+      real(dp) :: soap_new_cutoff
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) then
+         RAISE_ERROR("soap_new_cutoff: descriptor object not initialised", error)
+      endif
+
+      soap_new_cutoff = this%cutoff
+
+   endfunction soap_new_cutoff
 
    subroutine descriptor_sizes(this,at,n_descriptors,n_cross,mask,n_index,error)
       type(descriptor), intent(in) :: this
@@ -11538,6 +11848,9 @@ module descriptors_module
                n_descriptors,n_cross,mask=mask,n_index=n_index,error=error)
          case(DT_SOAP_TURBO)
             call soap_turbo_sizes(this%descriptor_soap_turbo,at, &
+               n_descriptors,n_cross,mask=mask,n_index=n_index,error=error)
+         case(DT_SOAP_NEW)
+            call soap_new_sizes(this%descriptor_soap_new,at, &
                n_descriptors,n_cross,mask=mask,n_index=n_index,error=error)
 #ifdef DESCRIPTORS_NONCOMMERCIAL
          case(DT_BOND_REAL_SPACE)
@@ -12449,6 +12762,45 @@ call print("mask present ? "//present(mask))
 
    endfunction soap_turbo_dimensions
 
+   subroutine soap_new_sizes(this,at,n_descriptors,n_cross,mask,n_index,error)
+      type(soap_new), intent(in) :: this
+      type(atoms), intent(in) :: at
+      integer, intent(out) :: n_descriptors, n_cross
+      logical, dimension(:), intent(in), optional :: mask
+      integer, intent(out), optional :: n_index
+      integer, optional, intent(out) :: error
+
+      integer :: i
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) then
+         RAISE_ERROR("soap_new_sizes: descriptor object not initialised", error)
+      endif
+
+      n_descriptors = 0
+      n_cross = 0
+
+      do i = 1, at%N
+         n_descriptors = n_descriptors + 1
+         n_cross = n_cross + n_neighbours(at,i,max_dist=this%cutoff) + 1
+      enddo
+
+      ! if(this%global) then
+      !    n_descriptors = 1
+      !    if( present(n_index) ) then
+      !       if( any(this%Z == 0) ) then
+      !          n_index = at%N
+      !       else
+      !          n_index = count( (/(any(at%Z(i)==this%Z),i=1,at%N)/) )
+      !       endif
+      !    endif
+      ! else
+      !    if( present(n_index) ) n_index = 1
+      ! endif
+
+   endsubroutine soap_new_sizes
+
    function descriptor_n_permutations(this,error)
       type(descriptor), intent(in) :: this
       integer, optional, intent(out) :: error
@@ -12461,7 +12813,7 @@ call print("mask present ? "//present(mask))
          case(DT_BISPECTRUM_SO4,DT_BISPECTRUM_SO3,DT_BEHLER,DT_DISTANCE_2b,DT_COORDINATION, &
             DT_ANGLE_3B,DT_CO_ANGLE_3B,DT_CO_DISTANCE_2b,DT_COSNX,DT_TRIHIS,DT_WATER_MONOMER,DT_BOND_REAL_SPACE,&
             DT_ATOM_REAL_SPACE,DT_POWER_SO3,DT_POWER_SO4,DT_SOAP,DT_RDF, DT_ALEX, DT_COM_DIMER, &
-            DT_SOAP_EXPRESS,DT_SOAP_TURBO)
+            DT_SOAP_EXPRESS,DT_SOAP_TURBO,DT_SOAP_NEW)
 
             descriptor_n_permutations = 1
 
@@ -12530,7 +12882,7 @@ call print("mask present ? "//present(mask))
          case(DT_BISPECTRUM_SO4,DT_BISPECTRUM_SO3,DT_BEHLER,DT_DISTANCE_2b,DT_COORDINATION, &
             DT_ANGLE_3B,DT_CO_ANGLE_3B,DT_CO_DISTANCE_2b,DT_COSNX,DT_TRIHIS,DT_WATER_MONOMER,DT_BOND_REAL_SPACE,&
             DT_ATOM_REAL_SPACE,DT_POWER_SO3,DT_POWER_SO4,DT_SOAP,DT_RDF, DT_ALEX, DT_COM_DIMER,&
-            DT_SOAP_EXPRESS,DT_SOAP_TURBO)
+            DT_SOAP_EXPRESS,DT_SOAP_TURBO,DT_SOAP_NEW)
 
             permutations(:,1) = (/ (i, i = 1, size(permutations,1)) /)
          case(DT_WATER_DIMER)
@@ -12888,7 +13240,275 @@ call print("mask present ? "//present(mask))
 
    endfunction GradRadialFunction
 
+   subroutine soap_new_radial(this,at,radial,do_gradient,error)
+      type(soap_new), intent(in) :: this
+      type(atoms), intent(in) :: at
+      logical, intent(in) :: do_gradient
+      type(radial_basis), intent(inout) :: radial
+      integer, optional, intent(out) :: error
 
+      integer :: a, i, j, n, my_n_neighbours
+      real(dp) :: r_ij
+      real(dp), dimension(3) :: u_ij
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+      call radial_finalise(radial)
+
+      allocate(radial%at(at%N))
+   
+      do i = 1, at%N
+         my_n_neighbours = n_neighbours(at, i, error=error)
+         allocate(radial%at(i)%value(this%radial%N,my_n_neighbours))
+         radial%at(i)%value = 0.0_dp
+         if(do_gradient) then
+            allocate(radial%at(i)%deriv(3,this%radial%N,my_n_neighbours))
+            radial%at(i)%deriv = 0.0_dp
+         endif
+         do n = 1, my_n_neighbours
+            j = neighbour(at,i,n,distance = r_ij, cosines = u_ij)
+            if( r_ij < this%cutoff ) then
+               do a = 1, this%radial%N
+                  radial%at(i)%value(a,n) = spline_value(this%radial%values(a),r_ij)
+                  if(do_gradient) radial%at(i)%deriv(:,a,n) = u_ij * spline_deriv(this%radial%values(a),r_ij)
+               enddo
+            endif
+         enddo
+      enddo
+
+   end subroutine soap_new_radial
+
+   subroutine soap_new_angular(this,at,angular,do_gradient,error)
+      type(soap_new), intent(in) :: this
+      type(atoms), intent(in) :: at
+      logical, intent(in) :: do_gradient
+      type(angular_basis), intent(inout) :: angular
+      integer, optional, intent(out) :: error
+
+      integer :: i, j, n, my_n_neighbours
+      real(dp) :: r_ij
+      real(dp), dimension(3) :: d_ij
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+      call angular_finalise(angular)
+
+      angular%l_max = maxval(this%radial%l)
+
+      allocate(angular%at(at%N))
+   
+      do i = 1, at%N
+         my_n_neighbours = n_neighbours(at, i, error=error)
+         allocate(angular%at(i)%ylm(my_n_neighbours))
+         if(do_gradient) allocate(angular%at(i)%dylm(my_n_neighbours))
+         do n = 1, my_n_neighbours
+            allocate(angular%at(i)%ylm(n)%mm(0:angular%l_max,-angular%l_max:angular%l_max))
+            angular%at(i)%ylm(n)%mm = CPLX_ZERO
+            if(do_gradient) then 
+               allocate(angular%at(i)%dylm(n)%mm(0:angular%l_max,-angular%l_max:angular%l_max,3))
+               angular%at(i)%dylm(n)%mm = CPLX_ZERO
+            endif
+            j = neighbour(at,i,n,distance=r_ij,diff = d_ij)
+            if( r_ij < this%cutoff ) then
+                angular%at(i)%ylm(n)%mm = SphericalYCartesian_all(angular%l_max,d_ij)
+                if(do_gradient) angular%at(i)%dylm(n)%mm(0:angular%l_max,-angular%l_max:angular%l_max,:) = &
+                    GradSphericalYCartesian_all(angular%l_max,d_ij)
+            endif
+         enddo
+      enddo
+
+   endsubroutine soap_new_angular
+
+   subroutine soap_new_coefficient(this,at,radial,angular,do_gradient,coeff,error)
+      type(soap_new), intent(in) :: this
+      type(atoms), intent(in) :: at
+      logical, intent(in) :: do_gradient
+      type(radial_basis), intent(in) :: radial
+      type(angular_basis), intent(in) :: angular
+      type(coefficient_basis), intent(inout) :: coeff
+      integer, optional, intent(out) :: error
+
+      integer :: a, i, j, k, n, l, m, n_neigh
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+      call coefficient_finalise(coeff, error=error)
+
+      allocate(coeff%at(at%N))
+      do i = 1, at%N
+         allocate(coeff%at(i)%c(this%radial%n))
+         if(do_gradient) then
+            n_neigh = size(angular%at(i)%dylm) ! add check to see if radial is commensurate
+            allocate(coeff%at(i)%dc(this%radial%n,n_neigh))
+         endif
+         do a = 1, this%radial%n
+            l = this%radial%l(a)
+            allocate(coeff%at(i)%c(a)%m(-l:l))
+            coeff%at(i)%c(a)%m = CPLX_ZERO
+         enddo
+         do n = 1, size(angular%at(i)%ylm)
+            do a = 1, this%radial%n
+               l = this%radial%l(a)
+               coeff%at(i)%c(a)%m = coeff%at(i)%c(a)%m + &
+                   angular%at(i)%ylm(n)%mm(l,-l:l)*radial%at(i)%value(a,n)
+               if(do_gradient) then
+                  allocate(coeff%at(i)%dc(a,n)%mm(3,-l:l))
+                  do concurrent (m = -l: l)
+                     coeff%at(i)%dc(a,n)%mm(:,m) = & 
+                     radial%at(i)%deriv(:,a,n) * angular%at(i)%ylm(n)%mm(l,m) + &
+                     radial%at(i)%value(a,n) * angular%at(i)%dylm(n)%mm(l,m,:)
+                  enddo
+               endif
+            enddo
+         enddo
+      enddo
+
+   endsubroutine soap_new_coefficient
+
+   subroutine soap_new_power(this,c1,c2,do_gradient,p,error)
+      type(soap_new), intent(in) :: this
+      type(coefficient_i), intent(in) :: c1, c2
+      logical, intent(in) :: do_gradient
+      type(descriptor_data_mono), intent(inout) :: p
+      integer, optional, intent(out) :: error
+
+      integer :: i, a, b, l, n
+
+      p%has_data = .true.
+      i = 0
+      do a = 1, this%radial%n
+         do b = a, this%radial%n
+            if(this%radial%l(a) == this%radial%l(b)) then
+               i = i+1
+               l = this%radial%l(a)
+               p%data(i) = real(sum(c1%c(b)%m*conjg(c2%c(a)%m))) / sqrt(2.0_dp*this%radial%l(a) + 1.0_dp)
+               if( a /= b) p%data(i) = p%data(i) * SQRT_TWO
+            endif
+         enddo
+      enddo
+
+      if(do_gradient) then
+         p%has_grad_data = .true.
+         do n = 1, ubound(c2%dc,dim=2)
+            i = 0
+            do a = 1, this%radial%n
+               do b = a, this%radial%n
+                  if(this%radial%l(a) == this%radial%l(b)) then
+                     l = this%radial%l(a)
+                     i = i+1
+                     p%grad_data(i,:,n) = real( &
+                        matmul(conjg(c2%dc(a,n)%mm(:,-l:l)),c1%c(b)%m) + &
+                        matmul(c1%dc(b,n)%mm(:,-l:l),conjg(c2%c(a)%m)),dp)
+                     p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*this%radial%l(a) + 1.0_dp)
+                     if( a /= b) p%grad_data(i,:,n) = p%grad_data(i,:,n) * SQRT_TWO
+                  endif
+               enddo
+            enddo
+         enddo
+
+         p%grad_data(:,:,0) = -sum(p%grad_data(:,:,1:),dim=3)
+      endif
+
+   endsubroutine soap_new_power
+
+   function soap_new_power_dimension(this,error)
+      type(soap_new), intent(in) :: this
+      integer, optional, intent(out) :: error
+      integer :: soap_new_power_dimension
+
+      integer :: i, a, b
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+
+      i = 0
+      do a = 1, this%radial%n
+         do b = a, this%radial%n
+            if(this%radial%l(a) == this%radial%l(b)) then
+               i = i+1
+            endif
+         enddo
+      enddo
+      soap_new_power_dimension = i
+
+   endfunction soap_new_power_dimension
+
+   subroutine coefficient_finalise(this,error)
+      type(coefficient_basis), intent(inout) :: this
+      integer, optional, intent(out) :: error
+      integer :: i, a
+
+      INIT_ERROR(error)
+
+      if( allocated(this%at)) then
+         do i = 1, size(this%at)
+            if( allocated(this%at(i)%c)) then
+               do a = 1, size(this%at(i)%c)
+                  if(allocated(this%at(i)%c(a)%m)) deallocate(this%at(i)%c(a)%m)
+               enddo
+               deallocate(this%at(i)%c)
+            endif
+         enddo
+         deallocate(this%at)
+      endif
+
+   end subroutine coefficient_finalise
+
+   subroutine angular_finalise(this,error)
+      type(angular_basis), intent(inout) :: this
+      integer, optional, intent(out) :: error
+
+      integer :: i, n
+
+      INIT_ERROR(error)
+
+      if(allocated(this%at)) then
+         do i = 1, size(this%at)
+            if(allocated(this%at(i)%ylm)) then
+               do n = 1, size(this%at(i)%ylm)
+                  if (allocated(this%at(i)%ylm(n)%mm)) &
+                      deallocate(this%at(i)%ylm(n)%mm)
+               enddo
+               deallocate(this%at(i)%ylm)
+            endif
+            if(allocated(this%at(i)%dylm)) then
+               do n = 1, size(this%at(i)%dylm)
+                  if (allocated(this%at(i)%dylm(n)%mm)) &
+                      deallocate(this%at(i)%dylm(n)%mm)
+               enddo
+               deallocate(this%at(i)%dylm)
+            endif
+         enddo
+         deallocate(this%at)
+      endif
+      this%l_max = 0
+   end subroutine angular_finalise
+
+
+   subroutine radial_finalise(this,error)
+      type(radial_basis), intent(inout) :: this
+      integer, optional, intent(out) :: error
+      integer :: i
+
+      INIT_ERROR(error)
+
+      if(allocated(this%at)) then
+         do i = 1, size(this%at)
+            if(allocated(this%at(i)%value)) deallocate(this%at(i)%value)
+            if(allocated(this%at(i)%deriv)) deallocate(this%at(i)%deriv)
+         enddo
+         deallocate(this%at)
+      endif
+
+   end subroutine radial_finalise
 
    function graphIsConnected(connectivityMatrix,error)
 
