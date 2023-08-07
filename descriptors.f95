@@ -3532,7 +3532,7 @@ module descriptors_module
          do n = 1, n_max
             if(n - l - 1 < 0) cycle
             write(my_filename,'(a,i2.2,a,i2.2)') "energy_",n,"_",l
-            call initialise(my_file,my_filename)
+            call initialise(my_file,my_filename,master_only=.false.)
             read(my_file%unit,*) energy
             call finalise(my_file)
             if(energy < this%cutoff_energy) &
@@ -3547,7 +3547,7 @@ module descriptors_module
       allocate(this%radial%values(this%radial%n))
       allocate(this%radial%l(this%radial%n))
 
-      call initialise(my_file,"r")
+      call initialise(my_file,"r",master_only=.false.)
       call read_ascii(my_file, r)
       call finalise(my_file)
 
@@ -3559,7 +3559,7 @@ module descriptors_module
             if(n - l - 1 < 0) cycle
 
             write(my_filename,'(a,i2.2,a,i2.2)') "energy_",n,"_",l
-            call initialise(my_file,my_filename)
+            call initialise(my_file,my_filename,master_only=.false.)
             read(my_file%unit,*) energy
             call finalise(my_file)
             if(energy < this%cutoff_energy) then
@@ -3567,7 +3567,7 @@ module descriptors_module
                this%radial%l(n_radial) = l
 
                write(my_filename,'(a,i2.2,a,i2.2)') "radial_",n,"_",l
-               call initialise(my_file,my_filename)
+               call initialise(my_file,my_filename,master_only=.false.)
                call read_ascii(my_file, f)
                call finalise(my_file)
 
@@ -13351,6 +13351,7 @@ call print("mask present ? "//present(mask))
             l = this%radial%l(a)
             allocate(coeff%at(i)%c(a)%m(-l:l))
             coeff%at(i)%c(a)%m = CPLX_ZERO
+            if( l == 0 ) coeff%at(i)%c(a)%m(0) = 0.5_dp / sqrt(PI) * spline_value(this%radial%values(a),0.0_dp)
          enddo
          do n = 1, size(angular%at(i)%ylm)
             do a = 1, this%radial%n
