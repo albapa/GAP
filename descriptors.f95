@@ -171,11 +171,15 @@ module descriptors_module
    type radial_type
       integer :: n
       type(spline), dimension(:), allocatable :: values
+      real(dp), dimension(:), allocatable :: energy
       integer, dimension(:), allocatable :: l
    endtype radial_type
 
    type coefficient_i
+      integer :: n
       type(cplx_1d), dimension(:), allocatable :: c
+      integer, dimension(:), allocatable :: l
+      real(dp), dimension(:), allocatable :: energy
       type(cplx_2d), dimension(:,:), allocatable :: dc
    endtype coefficient_i
    type coefficient_basis
@@ -516,6 +520,7 @@ module descriptors_module
       type(radial_type) :: radial
 
       real(dp) :: cutoff_energy
+      integer :: order
       logical :: initialised = .false.
    endtype soap_new
 
@@ -532,7 +537,7 @@ module descriptors_module
         general_trimer, rdf, as_distance_2b, molecule_lo_d, alex,  com_dimer,  distance_nb, &
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
         ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, soap_turbo, soap_express, &
-        soap_new
+        radial_type, soap_new
 #else
    public :: soap, bispectrum_so4, bispectrum_so3, behler, distance_2b, &
         coordination, angle_3b, co_angle_3b, co_distance_2b, cosnx, trihis, water_monomer, &
@@ -541,7 +546,7 @@ module descriptors_module
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
         ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, &
         soap_turbo, &
-        soap_new
+        radial_type, soap_new
 #endif
 
    !=======================================================================
@@ -3504,14 +3509,17 @@ module descriptors_module
       character(len=*), intent(in) :: args_str
       integer, optional, intent(out) :: error
 
-      integer, parameter :: n_max = 20, l_max = 19, n_r = 201
+      integer, parameter :: n_r = 201
+      integer :: n_max, l_max
+
       real(dp) :: energy, weight
       real(dp), dimension(:), allocatable :: r,f
       integer :: l, n, n_radial
       type(InOutput) :: my_file
-      character(len=STRING_LENGTH) :: my_filename
+      character(len=STRING_LENGTH) :: my_filename, species_Z_str
 
       type(Dictionary) :: params
+      logical :: has_n_species, has_species_Z
 
       INIT_ERROR(error)
 
@@ -3521,11 +3529,37 @@ module descriptors_module
       call param_register(params, 'cutoff', PARAM_MANDATORY, this%cutoff, help_string="Cutoff for soap-type descriptors")
       call param_register(params, 'cutoff_transition_width', '0.50', this%cutoff_transition_width, help_string="Cutoff transition width for soap-type descriptors")
       call param_register(params, 'cutoff_energy', '3.0', this%cutoff_energy, help_string="Cutoff transition width for soap-type descriptors")
+      call param_register(params, 'order', '2', this%order, help_string="Correlation order")
+      call param_register(params, 'l_max', '9', l_max, help_string="Maximum number of angular momentum channels")
+
+      call param_register(params, 'n_species', '1', this%n_species, has_value_target=has_n_species, help_string="Number of species for the descriptor")
+      call param_register(params, 'species_Z', '', species_Z_str, has_value_target=has_species_Z, help_string="Atomic number of species")
+      call param_register(params, 'Z', '0', this%Z, help_string="Atomic number of central atom, 0 is the wild-card")
 
       if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_new_initialise args_str')) then
          RAISE_ERROR("soap_new_initialise failed to parse args_str='"//trim(args_str)//"'", error)
       endif
       call finalise(params)
+
+      allocate(this%species_Z(this%n_species))
+
+      call initialise(params)
+      if( has_n_species ) then
+         if(this%n_species == 1) then
+            call param_register(params, 'species_Z', '0', this%species_Z(1), help_string="Atomic number of species")
+         else
+            call param_register(params, 'species_Z', '//MANDATORY//', this%species_Z(1:this%n_species), help_string="Atomic number of species")
+         endif
+      else
+         call param_register(params, 'species_Z', '0', this%species_Z(1), help_string="Atomic number of species")
+      endif
+      if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_initialise args_str')) then
+         RAISE_ERROR("soap_initialise failed to parse args_str='"//trim(args_str)//"'", error)
+      endif
+      call finalise(params)
+
+      call cg_initialise(l_max)
+      n_max = l_max + 1
 
       n_radial = 0
       do l = 0, l_max
@@ -3546,6 +3580,7 @@ module descriptors_module
 
       allocate(this%radial%values(this%radial%n))
       allocate(this%radial%l(this%radial%n))
+      allocate(this%radial%energy(this%radial%n))
 
       call initialise(my_file,"r",master_only=.false.)
       call read_ascii(my_file, r)
@@ -3565,14 +3600,15 @@ module descriptors_module
             if(energy < this%cutoff_energy) then
                n_radial = n_radial + 1
                this%radial%l(n_radial) = l
+               this%radial%energy(n_radial) = energy
 
                write(my_filename,'(a,i2.2,a,i2.2)') "radial_",n,"_",l
                call initialise(my_file,my_filename,master_only=.false.)
                call read_ascii(my_file, f)
                call finalise(my_file)
 
-               weight = cos_cutoff_function(energy,this%cutoff_energy)
-               f = f * weight
+               !weight = cos_cutoff_function(energy,this%cutoff_energy)
+               !f = f * weight
                call initialise(this%radial%values(n_radial),r,f,0.0_dp,0.0_dp)
             endif
          enddo
@@ -3593,6 +3629,7 @@ module descriptors_module
       if(.not. this%initialised) return
       this%cutoff = 0.0_dp
       this%cutoff_transition_width = 0.0_dp
+      this%order = 0
 
       if(allocated(this%radial%values)) then
          do n_radial = 1, this%radial%n
@@ -3601,6 +3638,7 @@ module descriptors_module
          deallocate(this%radial%values)
       endif
       if(allocated(this%radial%l)) deallocate(this%radial%l)
+      if(allocated(this%radial%energy)) deallocate(this%radial%energy)
       this%radial%n = 0
 
       this%initialised = .false.
@@ -10496,6 +10534,7 @@ module descriptors_module
       type(radial_basis) :: radial
       type(angular_basis) :: angular
       type(coefficient_basis) :: coeff
+      type(coefficient_i) :: c_cross_c
 
       integer :: d, i, j, n, n_index, l_n_neighbours
       integer, dimension(3) :: s_ij
@@ -10512,7 +10551,13 @@ module descriptors_module
       my_do_descriptor = optional_default(.false., do_descriptor)
       my_do_grad_descriptor = optional_default(.false., do_grad_descriptor)
 
-      d = soap_new_power_dimension(this,error)
+      select case(this%order)
+      case(2)
+         d = soap_new_power_dimension(this,error=error)
+      case(3)
+         d = soap_new_bi_dimension(this,error=error)
+      endselect
+
       n_index = 1
       allocate(descriptor_out%x(at%N))
 
@@ -10550,11 +10595,19 @@ module descriptors_module
       call soap_new_coefficient(this,at,radial,angular,my_do_grad_descriptor,&
           coeff,error=error)
 
+      call system_timer('soap_new_calc_power')
       do i = 1, at%N
          descriptor_out%x(i)%ci(1) = i
          descriptor_out%x(i)%has_data = .true.
-         call soap_new_power(this,coeff%at(i),coeff%at(i),my_do_grad_descriptor, &
-             descriptor_out%x(i),error)
+         select case(this%order)
+         case(2)
+            call soap_new_power(this,coeff%at(i),coeff%at(i),my_do_grad_descriptor, &
+                descriptor_out%x(i),error=error)
+         case(3)
+            call soap_new_bi(this,coeff%at(i),coeff%at(i),my_do_grad_descriptor, c_cross_c,error=error)
+            call soap_new_power(this,coeff%at(i),c_cross_c,my_do_grad_descriptor, &
+                descriptor_out%x(i),upper_only = .false., error=error)
+         endselect
 
 
          if(my_do_grad_descriptor) then
@@ -10572,10 +10625,12 @@ module descriptors_module
             enddo
          endif
       enddo
+      call system_timer('soap_new_calc_power')
 
       call radial_finalise(radial)
       call angular_finalise(angular)
       call coefficient_finalise(coeff)
+      call coefficient_i_finalise(c_cross_c)
       call system_timer('soap_new_calc')
 
    end subroutine soap_new_calc
@@ -11324,7 +11379,12 @@ module descriptors_module
          RAISE_ERROR("soap_new_dimensions: descriptor object not initialised", error)
       endif
 
-      i = soap_new_power_dimension(this,error)
+      select case(this%order)
+      case(2)
+         i = soap_new_power_dimension(this,error=error)
+      case(3)
+         i = soap_new_bi_dimension(this,error=error)
+      endselect
 
    endfunction soap_new_dimensions
 
@@ -13255,6 +13315,7 @@ call print("mask present ? "//present(mask))
 
       if(.not. this%initialised) return
 
+      call system_timer('soap_new_radial')
       call radial_finalise(radial)
 
       allocate(radial%at(at%N))
@@ -13277,6 +13338,7 @@ call print("mask present ? "//present(mask))
             endif
          enddo
       enddo
+      call system_timer('soap_new_radial')
 
    end subroutine soap_new_radial
 
@@ -13295,6 +13357,7 @@ call print("mask present ? "//present(mask))
 
       if(.not. this%initialised) return
 
+      call system_timer('soap_new_angular')
       call angular_finalise(angular)
 
       angular%l_max = maxval(this%radial%l)
@@ -13320,6 +13383,7 @@ call print("mask present ? "//present(mask))
             endif
          enddo
       enddo
+      call system_timer('soap_new_angular')
 
    endsubroutine soap_new_angular
 
@@ -13338,17 +13402,25 @@ call print("mask present ? "//present(mask))
 
       if(.not. this%initialised) return
 
+      call system_timer('soap_new_coefficient')
       call coefficient_finalise(coeff, error=error)
 
       allocate(coeff%at(at%N))
       do i = 1, at%N
+         coeff%at(i)%n = this%radial%n
          allocate(coeff%at(i)%c(this%radial%n))
+         allocate(coeff%at(i)%l(this%radial%n))
+         allocate(coeff%at(i)%energy(this%radial%n))
+
          if(do_gradient) then
             n_neigh = size(angular%at(i)%dylm) ! add check to see if radial is commensurate
             allocate(coeff%at(i)%dc(this%radial%n,n_neigh))
          endif
          do a = 1, this%radial%n
             l = this%radial%l(a)
+            coeff%at(i)%l(a) = l
+            coeff%at(i)%energy(a) = this%radial%energy(a)
+
             allocate(coeff%at(i)%c(a)%m(-l:l))
             coeff%at(i)%c(a)%m = CPLX_ZERO
             if( l == 0 ) coeff%at(i)%c(a)%m(0) = 0.5_dp / sqrt(PI) * spline_value(this%radial%values(a),0.0_dp)
@@ -13369,61 +13441,204 @@ call print("mask present ? "//present(mask))
             enddo
          enddo
       enddo
+      call system_timer('soap_new_coefficient')
 
    endsubroutine soap_new_coefficient
 
-   subroutine soap_new_power(this,c1,c2,do_gradient,p,error)
+   subroutine soap_new_power(this,c1,c2,do_gradient,p,upper_only,error)
       type(soap_new), intent(in) :: this
       type(coefficient_i), intent(in) :: c1, c2
       logical, intent(in) :: do_gradient
       type(descriptor_data_mono), intent(inout) :: p
+      logical, optional, intent(in) :: upper_only
       integer, optional, intent(out) :: error
 
       integer :: i, a, b, l, n
+      real(dp) :: energy_ab, p_norm
+      logical :: my_upper_only
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+      my_upper_only = optional_default(.true.,upper_only)
 
       p%has_data = .true.
       i = 0
-      do a = 1, this%radial%n
-         do b = a, this%radial%n
-            if(this%radial%l(a) == this%radial%l(b)) then
+      do a = 1, c1%n
+         do b = merge(a,1,my_upper_only), c2%n
+            energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) == c2%l(b) .and. energy_ab < this%cutoff_energy ) then
                i = i+1
-               l = this%radial%l(a)
-               p%data(i) = real(sum(c1%c(b)%m*conjg(c2%c(a)%m))) / sqrt(2.0_dp*this%radial%l(a) + 1.0_dp)
-               if( a /= b) p%data(i) = p%data(i) * SQRT_TWO
+               l = c1%l(a)
+               p%data(i) = real(sum(c1%c(a)%m*conjg(c2%c(b)%m))) / sqrt(2.0_dp*l + 1.0_dp) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+               if( my_upper_only .and. a /= b) p%data(i) = p%data(i) * SQRT_TWO
             endif
          enddo
       enddo
+
+      p_norm = sqrt(sum(p%data*p%data))
 
       if(do_gradient) then
          p%has_grad_data = .true.
          do n = 1, ubound(c2%dc,dim=2)
             i = 0
-            do a = 1, this%radial%n
-               do b = a, this%radial%n
-                  if(this%radial%l(a) == this%radial%l(b)) then
-                     l = this%radial%l(a)
+            do a = 1, c1%n
+               do b = merge(a,1,my_upper_only), c2%n
+                  energy_ab = c1%energy(a) + c2%energy(b)
+                  if( c1%l(a) == c2%l(b) .and. energy_ab < this%cutoff_energy ) then
+                     l = c1%l(a)
                      i = i+1
                      p%grad_data(i,:,n) = real( &
-                        matmul(conjg(c2%dc(a,n)%mm(:,-l:l)),c1%c(b)%m) + &
-                        matmul(c1%dc(b,n)%mm(:,-l:l),conjg(c2%c(a)%m)),dp)
-                     p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*this%radial%l(a) + 1.0_dp)
-                     if( a /= b) p%grad_data(i,:,n) = p%grad_data(i,:,n) * SQRT_TWO
+                        matmul(conjg(c2%dc(b,n)%mm(:,-l:l)),c1%c(a)%m) + &
+                        matmul(c1%dc(a,n)%mm(:,-l:l),conjg(c2%c(b)%m)),dp)
+                     p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*l + 1.0_dp) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+                     if( my_upper_only .and. a /= b ) p%grad_data(i,:,n) = p%grad_data(i,:,n) * SQRT_TWO
                   endif
                enddo
+            enddo
+         enddo
+
+
+         do n = 1, ubound(c2%dc,dim=2)
+            do a = 1, 3
+               p%grad_data(:,a,n) = p%grad_data(:,a,n) / p_norm - p%data * sum(p%data*p%grad_data(:,a,n)) / p_norm**3
             enddo
          enddo
 
          p%grad_data(:,:,0) = -sum(p%grad_data(:,:,1:),dim=3)
       endif
 
+      p%data = p%data / p_norm
+
    endsubroutine soap_new_power
 
-   function soap_new_power_dimension(this,error)
+   function soap_new_power_dimension(this,upper_only,error)
       type(soap_new), intent(in) :: this
+      logical, optional, intent(in) :: upper_only
       integer, optional, intent(out) :: error
       integer :: soap_new_power_dimension
 
       integer :: i, a, b
+      logical :: my_upper_only
+      real(dp) :: energy_ab
+
+      INIT_ERROR(error)
+
+      if(.not. this%initialised) return
+
+      my_upper_only = optional_default(.true.,upper_only)
+
+      i = 0
+      do a = 1, this%radial%n
+         do b = merge(a,1,my_upper_only), this%radial%n
+            energy_ab = this%radial%energy(a) + this%radial%energy(b)
+            if( this%radial%l(a) == this%radial%l(b) .and. energy_ab < this%cutoff_energy ) then
+               i = i+1
+            endif
+         enddo
+      enddo
+      soap_new_power_dimension = i
+
+   endfunction soap_new_power_dimension
+
+   subroutine soap_new_bi(this,c1,c2,do_gradient,c_out,error)
+      type(soap_new), intent(in) :: this
+      type(coefficient_i), intent(in) :: c1, c2
+      logical, intent(in) :: do_gradient
+      type(coefficient_i), intent(inout) :: c_out
+      integer, optional, intent(out) :: error
+
+      integer :: i, a, b, l, n, ma, mb, n_neigh
+      real(dp) :: energy_ab
+
+      call coefficient_i_finalise(c_out)
+
+      i = 0
+      do a = 1, c1%n
+         do b = a, c2%n
+            energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+               do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
+                  i = i + 1
+               enddo
+            endif
+         enddo
+      enddo
+      c_out%n = i
+      allocate(c_out%c(i))
+      allocate(c_out%l(i))
+      allocate(c_out%energy(i))
+
+      i = 0
+      do a = 1, c1%n
+         do b = a, c2%n
+            energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+               do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
+                  i = i+1
+
+                  allocate(c_out%c(i)%m(-l:l))
+                  c_out%c(i)%m = CPLX_ZERO
+
+                  c_out%l(i) = l
+                  c_out%energy(i) = energy_ab
+
+                  do ma = -c1%l(a), c1%l(a)
+                     do mb = -c2%l(b), c2%l(b)
+                        !if( cg_check(c2%l(b),mb, c1%l(a), ma, l, ma+mb) ) then
+                        if( abs(ma+mb) <= l ) then
+                           c_out%c(i)%m(ma+mb) = c_out%c(i)%m(ma+mb) + c2%c(b)%m(mb)*c1%c(a)%m(ma)*cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb)*cos_cutoff_function(energy_ab,this%cutoff_energy)
+                        endif
+
+                     enddo
+                  enddo
+                  if( a/=b ) c_out%c(i)%m = c_out%c(i)%m * SQRT_TWO
+               enddo
+            endif
+         enddo
+      enddo
+
+      if(do_gradient) then
+         n_neigh = ubound(c1%dc,dim=2)
+         allocate(c_out%dc(c_out%n,n_neigh))
+         do n = 1, n_neigh
+            i = 0
+            do a = 1, c1%n
+               do b = a, c2%n
+                  energy_ab = c1%energy(a) + c2%energy(b)
+                  if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+                     do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
+                        i = i+1
+                        allocate(c_out%dc(i,n)%mm(3,-l:l))
+                        c_out%dc(i,n)%mm = CPLX_ZERO
+                        do ma = -c1%l(a), c1%l(a)
+                           do mb = -c2%l(b), c2%l(b)
+                              !if( cg_check(c2%l(b),mb, c1%l(a), ma, l, ma+mb) ) then
+                              if( abs(ma+mb) <= l ) then
+                                 c_out%dc(i,n)%mm(:,ma+mb) = c_out%dc(i,n)%mm(:,ma+mb) + ( c2%dc(b,n)%mm(:,mb)*c1%c(a)%m(ma) + &
+                                    c2%c(b)%m(mb)*c1%dc(a,n)%mm(:,ma) ) * &
+                                    cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+                              endif
+                           enddo ! mb
+                        enddo ! ma
+                        if( a/=b ) c_out%dc(i,n)%mm = c_out%dc(i,n)%mm * SQRT_TWO
+                     enddo ! l
+                  endif 
+               enddo ! b
+            enddo ! a
+         enddo ! n
+      endif
+
+   endsubroutine soap_new_bi
+
+   function soap_new_bi_dimension(this,error)
+      type(soap_new), intent(in) :: this
+      integer, optional, intent(out) :: error
+      integer :: soap_new_bi_dimension
+
+      integer :: i, a, b, c
+      real(dp) :: energy_ab
 
       INIT_ERROR(error)
 
@@ -13433,14 +13648,19 @@ call print("mask present ? "//present(mask))
       i = 0
       do a = 1, this%radial%n
          do b = a, this%radial%n
-            if(this%radial%l(a) == this%radial%l(b)) then
-               i = i+1
-            endif
+            do c = 1, this%radial%n
+               energy_ab = this%radial%energy(a) + this%radial%energy(b) + this%radial%energy(c)
+               if( this%radial%l(a) + this%radial%l(b) <= 9 .and. energy_ab < this%cutoff_energy .and. &
+                  this%radial%l(c) >= abs(this%radial%l(a) - this%radial%l(b)) .and. &
+                  this%radial%l(c) <= this%radial%l(a) + this%radial%l(b) ) then
+                  i = i+1
+               endif
+            enddo
          enddo
       enddo
-      soap_new_power_dimension = i
+      soap_new_bi_dimension = i
 
-   endfunction soap_new_power_dimension
+   endfunction soap_new_bi_dimension
 
    subroutine coefficient_finalise(this,error)
       type(coefficient_basis), intent(inout) :: this
@@ -13451,17 +13671,39 @@ call print("mask present ? "//present(mask))
 
       if( allocated(this%at)) then
          do i = 1, size(this%at)
-            if( allocated(this%at(i)%c)) then
-               do a = 1, size(this%at(i)%c)
-                  if(allocated(this%at(i)%c(a)%m)) deallocate(this%at(i)%c(a)%m)
-               enddo
-               deallocate(this%at(i)%c)
-            endif
+            call coefficient_i_finalise(this%at(i),error)
          enddo
          deallocate(this%at)
       endif
 
    end subroutine coefficient_finalise
+
+   subroutine coefficient_i_finalise(this,error)
+      type(coefficient_i), intent(inout) :: this
+      integer, optional, intent(out) :: error
+      integer :: i, a
+
+      INIT_ERROR(error)
+
+      if( allocated(this%c)) then
+         do a = 1, size(this%c)
+            if(allocated(this%c(a)%m)) deallocate(this%c(a)%m)
+         enddo
+         deallocate(this%c)
+      endif
+      if( allocated(this%dc)) then
+         do i = 1, size(this%dc,2)
+            do a = 1, size(this%dc,1)
+               if(allocated(this%dc(a,i)%mm)) deallocate(this%dc(a,i)%mm)
+            enddo
+         enddo
+         deallocate(this%dc)
+      endif
+      if( allocated(this%l) ) deallocate(this%l)
+      if( allocated(this%energy) ) deallocate(this%energy)
+      this%n = 0
+
+   end subroutine coefficient_i_finalise
 
    subroutine angular_finalise(this,error)
       type(angular_basis), intent(inout) :: this
