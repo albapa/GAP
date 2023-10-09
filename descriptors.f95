@@ -139,6 +139,10 @@ module descriptors_module
       complex(dp), dimension(:,:), allocatable :: mm
    endtype cplx_2d
 
+   type int_1d
+      integer , dimension(:), allocatable :: m
+   endtype int_1d
+
    type int_2d
       integer , dimension(:,:), allocatable :: mm
    endtype int_2d
@@ -520,7 +524,15 @@ module descriptors_module
       type(radial_type) :: radial
 
       real(dp) :: cutoff_energy
-      integer :: order
+
+      integer :: tensor_sketch_n
+      real(dp), dimension(:,:,:,:), allocatable :: tensor_sketch_weight
+      integer, dimension(:), allocatable :: tensor_sketch_l
+      real(dp), dimension(:), allocatable :: tensor_sketch_energy
+
+      integer, dimension(total_elements) :: species_map = 0
+      type(int_1d), dimension(:), allocatable :: l_map
+      integer :: order, Z
       logical :: initialised = .false.
    endtype soap_new
 
@@ -3514,12 +3526,13 @@ module descriptors_module
 
       real(dp) :: energy, weight
       real(dp), dimension(:), allocatable :: r,f
-      integer :: l, n, n_radial
+      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l
+      integer, dimension(:), allocatable :: species_Z
       type(InOutput) :: my_file
       character(len=STRING_LENGTH) :: my_filename, species_Z_str
 
       type(Dictionary) :: params
-      logical :: has_n_species, has_species_Z
+      logical :: has_n_species, has_species_Z, has_n_channel, do_tensor_sketch
 
       INIT_ERROR(error)
 
@@ -3531,47 +3544,66 @@ module descriptors_module
       call param_register(params, 'cutoff_energy', '3.0', this%cutoff_energy, help_string="Cutoff transition width for soap-type descriptors")
       call param_register(params, 'order', '2', this%order, help_string="Correlation order")
       call param_register(params, 'l_max', '9', l_max, help_string="Maximum number of angular momentum channels")
+      call param_register(params, 'n_max', '10', n_max, help_string="Maximum number of radial channels for l = 0")
 
-      call param_register(params, 'n_species', '1', this%n_species, has_value_target=has_n_species, help_string="Number of species for the descriptor")
-      call param_register(params, 'species_Z', '', species_Z_str, has_value_target=has_species_Z, help_string="Atomic number of species")
-      call param_register(params, 'Z', '0', this%Z, help_string="Atomic number of central atom, 0 is the wild-card")
+      call param_register(params, 'Z', PARAM_MANDATORY, this%Z, help_string="Atomic number of central atom, 0 is the wild-card")
+      call param_register(params, 'n_species', PARAM_MANDATORY, n_species, has_value_target=has_n_species, help_string="Number of species for the descriptor")
+      call param_register(params, 'species_Z', PARAM_MANDATORY, species_Z_str, has_value_target=has_species_Z, help_string="Atomic number of species")
+      call param_register(params, 'n_channel', '0', n_channel, has_value_target=has_n_channel, help_string="Number of mixing channels per radial &
+         & channel, the default is the same as the number of species")
+      call param_register(params, 'do_tensor_sketch', 'F', do_tensor_sketch,  help_string="Whether to do tensor sketching.")
 
       if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_new_initialise args_str')) then
          RAISE_ERROR("soap_new_initialise failed to parse args_str='"//trim(args_str)//"'", error)
       endif
       call finalise(params)
 
-      allocate(this%species_Z(this%n_species))
+      allocate(species_Z(n_species))
 
       call initialise(params)
       if( has_n_species ) then
-         if(this%n_species == 1) then
-            call param_register(params, 'species_Z', '0', this%species_Z(1), help_string="Atomic number of species")
+         if(n_species == 1) then
+            call param_register(params, 'species_Z', '0', species_Z(1), help_string="Atomic number of species")
          else
-            call param_register(params, 'species_Z', '//MANDATORY//', this%species_Z(1:this%n_species), help_string="Atomic number of species")
+            call param_register(params, 'species_Z', '//MANDATORY//', species_Z(1:n_species), help_string="Atomic number of species")
          endif
       else
-         call param_register(params, 'species_Z', '0', this%species_Z(1), help_string="Atomic number of species")
+         call param_register(params, 'species_Z', '0', species_Z(1), help_string="Atomic number of species")
       endif
       if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_initialise args_str')) then
          RAISE_ERROR("soap_initialise failed to parse args_str='"//trim(args_str)//"'", error)
       endif
       call finalise(params)
 
-      call cg_initialise(l_max)
-      n_max = l_max + 1
+      this%species_map = 0
+      do n = 1, n_species
+         this%species_map(species_Z(n)) = n
+      enddo
 
+      if( .not. has_n_channel ) n_channel = n_species
+
+      if( n_channel /= n_species .and. .not. do_tensor_sketch ) then
+         RAISE_ERROR("soap_new_initialise must do tensor sketching n_channel = "//n_channel//" and n_species = "//n_species//" are unequal", error)
+      endif
+
+      if( this%order > 2 ) call cg_initialise(l_max)
+
+      allocate(this%l_map(0:l_max))
       n_radial = 0
       do l = 0, l_max
+         n_l = 0
          do n = 1, n_max
             if(n - l - 1 < 0) cycle
             write(my_filename,'(a,i2.2,a,i2.2)') "energy_",n,"_",l
             call initialise(my_file,my_filename,master_only=.false.)
             read(my_file%unit,*) energy
             call finalise(my_file)
-            if(energy < this%cutoff_energy) &
+            if(energy < this%cutoff_energy) then
                n_radial = n_radial + 1
+               n_l = n_l + 1
+            endif
          enddo
+         allocate(this%l_map(l)%m(n_l))
       enddo
 
       this%radial%n = n_radial
@@ -3588,8 +3620,15 @@ module descriptors_module
 
       r = r / 10.0_dp * this%cutoff
 
+
+      this%tensor_sketch_n = n_channel*n_radial
+      allocate(this%tensor_sketch_weight(n_radial,this%tensor_sketch_n,n_species,this%order))
+      allocate(this%tensor_sketch_l(this%tensor_sketch_n))
+      allocate(this%tensor_sketch_energy(this%tensor_sketch_n))
+
       n_radial = 0
       do l = 0, l_max
+         n_l = 0
          do n = 1, n_max
             if(n - l - 1 < 0) cycle
 
@@ -3599,6 +3638,10 @@ module descriptors_module
             call finalise(my_file)
             if(energy < this%cutoff_energy) then
                n_radial = n_radial + 1
+               n_l = n_l + 1
+
+               this%l_map(l)%m(n_l) = n_radial
+
                this%radial%l(n_radial) = l
                this%radial%energy(n_radial) = energy
 
@@ -3614,6 +3657,20 @@ module descriptors_module
          enddo
       enddo
 
+      this%tensor_sketch_weight = 0.0_dp
+      do o = 1, this%order
+         do s = 1, n_species
+            do k = 1, this%tensor_sketch_n
+               do n = 1, this%radial%n
+               enddo
+            enddo
+         enddo
+      enddo
+
+      if(allocated(species_Z)) deallocate(species_Z)
+      if(allocated(r)) deallocate(r)
+      if(allocated(f)) deallocate(f)
+
       this%initialised = .true.
 
    endsubroutine soap_new_initialise
@@ -3622,24 +3679,42 @@ module descriptors_module
       type(soap_new), intent(inout) :: this
       integer, optional, intent(out) :: error
 
-      integer :: n_radial
+      integer :: a, l
 
       INIT_ERROR(error)
 
       if(.not. this%initialised) return
+
       this%cutoff = 0.0_dp
       this%cutoff_transition_width = 0.0_dp
       this%order = 0
+      this%cutoff_energy = 0.0_dp
 
       if(allocated(this%radial%values)) then
-         do n_radial = 1, this%radial%n
-            call finalise(this%radial%values(n_radial))
+         do a = 1, this%radial%n
+            call finalise(this%radial%values(a))
          enddo
          deallocate(this%radial%values)
       endif
       if(allocated(this%radial%l)) deallocate(this%radial%l)
       if(allocated(this%radial%energy)) deallocate(this%radial%energy)
       this%radial%n = 0
+
+      this%tensor_sketch_n = 0
+      if(allocated(this%tensor_sketch_weight)) deallocate(this%tensor_sketch_weight)
+      if(allocated(this%tensor_sketch_l)) deallocate(this%tensor_sketch_l)
+      if(allocated(this%tensor_sketch_energy)) deallocate(this%tensor_sketch_energy)
+
+      this%species_map = 0
+      if(allocated(this%l_map)) then
+         do l = lbound(this%l_map,1), ubound(this%l_map,1)
+            if(allocated(this%l_map(l)%m)) deallocate(this%l_map(l)%m)
+         enddo
+         deallocate(this%l_map)
+      endif
+
+      this%order = 0
+      this%Z = 0
 
       this%initialised = .false.
 
