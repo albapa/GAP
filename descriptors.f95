@@ -3526,7 +3526,7 @@ module descriptors_module
 
       real(dp) :: energy, weight
       real(dp), dimension(:), allocatable :: r,f
-      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l
+      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l, n_lo, n_hi
       integer, dimension(:), allocatable :: species_Z
       type(InOutput) :: my_file
       character(len=STRING_LENGTH) :: my_filename, species_Z_str
@@ -3658,14 +3658,34 @@ module descriptors_module
       enddo
 
       this%tensor_sketch_weight = 0.0_dp
-      do o = 1, this%order
-         do s = 1, n_species
-            do k = 1, this%tensor_sketch_n
-               do n = 1, this%radial%n
+      if( do_tensor_sketch ) then
+         do o = 1, this%order
+            do s = 1, n_species
+               do l = 0, l_max
+                  n_lo = this%l_map(l)%m(1)
+                  n_hi = this%l_map(l)%m(size(this%l_map(l)%m))
+                  this%tensor_sketch_l(n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial) = l
+
+                  this%tensor_sketch_weight(n_lo:n_hi, &
+                     n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial,s,o) = &
+                     ran_normal(size(this%l_map(l)%m),size(this%l_map(l)%m))
+               enddo
+               this%tensor_sketch_energy = matmul(this%radial%energy, &
+                  this%tensor_sketch_weight(:,:,s,o))
+            enddo
+         enddo
+      else ! fill it with a diagonal
+         do o = 1, this%order
+            do s = 1, n_species
+               do n = 1, n_radial
+                  k = n + (s-1)*n_radial
+                  this%tensor_sketch_weight(n,k,s,o) = 1.0_dp
+                  this%tensor_sketch_l(k) = this%radial%l(n)
+                  this%tensor_sketch_energy(k) = this%radial%energy(n)
                enddo
             enddo
          enddo
-      enddo
+      endif
 
       if(allocated(species_Z)) deallocate(species_Z)
       if(allocated(r)) deallocate(r)
@@ -13375,16 +13395,19 @@ call print("mask present ? "//present(mask))
 
    endfunction GradRadialFunction
 
-   subroutine soap_new_radial(this,at,radial,do_gradient,error)
+   subroutine soap_new_radial(this,at,radial,do_gradient,order,error)
       type(soap_new), intent(in) :: this
       type(atoms), intent(in) :: at
-      logical, intent(in) :: do_gradient
       type(radial_basis), intent(inout) :: radial
+      logical, intent(in) :: do_gradient
+      integer, intent(in), optional :: order
       integer, optional, intent(out) :: error
 
-      integer :: a, i, j, n, my_n_neighbours
+      integer :: a, i, j, n, my_n_neighbours, my_order, o, s
       real(dp) :: r_ij
       real(dp), dimension(3) :: u_ij
+      real(dp), dimension(this%radial%n) :: radial_values
+      real(dp), dimension(3,this%radial%n) :: radial_derivs
 
       INIT_ERROR(error)
 
@@ -13393,23 +13416,36 @@ call print("mask present ? "//present(mask))
       call system_timer('soap_new_radial')
       call radial_finalise(radial)
 
+      my_order = optional_default(1,order)
+
+      if( my_order > this%order ) then
+         RAISE_ERROR("soap_new_radial: invalid order",error)
+      endif
+
       allocate(radial%at(at%N))
    
       do i = 1, at%N
          my_n_neighbours = n_neighbours(at, i, error=error)
-         allocate(radial%at(i)%value(this%radial%N,my_n_neighbours))
+         allocate(radial%at(i)%value(this%tensor_sketch_n,my_n_neighbours))
          radial%at(i)%value = 0.0_dp
          if(do_gradient) then
-            allocate(radial%at(i)%deriv(3,this%radial%N,my_n_neighbours))
+            allocate(radial%at(i)%deriv(3,this%tensor_sketch_n,my_n_neighbours))
             radial%at(i)%deriv = 0.0_dp
          endif
          do n = 1, my_n_neighbours
             j = neighbour(at,i,n,distance = r_ij, cosines = u_ij)
+            s = this%species_map(at%Z(j))
             if( r_ij < this%cutoff ) then
                do a = 1, this%radial%N
-                  radial%at(i)%value(a,n) = spline_value(this%radial%values(a),r_ij)
-                  if(do_gradient) radial%at(i)%deriv(:,a,n) = u_ij * spline_deriv(this%radial%values(a),r_ij)
+                  radial_values(a) = spline_value(this%radial%values(a),r_ij)
+                  if(do_gradient) radial_derivs(:,a) = u_ij * spline_deriv(this%radial%values(a),r_ij)
                enddo
+
+               radial%at(i)%value(:,n) = matmul(radial_values,&
+                  this%tensor_sketch_weight(:,:,s,my_order))
+               if(do_gradient) radial%at(i)%deriv(:,:,n) = matmul(radial_derivs,&
+                  this%tensor_sketch_weight(:,:,s,my_order))
+
             endif
          enddo
       enddo
@@ -13482,19 +13518,19 @@ call print("mask present ? "//present(mask))
 
       allocate(coeff%at(at%N))
       do i = 1, at%N
-         coeff%at(i)%n = this%radial%n
-         allocate(coeff%at(i)%c(this%radial%n))
-         allocate(coeff%at(i)%l(this%radial%n))
-         allocate(coeff%at(i)%energy(this%radial%n))
+         coeff%at(i)%n = this%tensor_sketch_n
+         allocate(coeff%at(i)%c(this%tensor_sketch_n))
+         allocate(coeff%at(i)%l(this%tensor_sketch_n))
+         allocate(coeff%at(i)%energy(this%tensor_sketch_n))
 
          if(do_gradient) then
             n_neigh = size(angular%at(i)%dylm) ! add check to see if radial is commensurate
-            allocate(coeff%at(i)%dc(this%radial%n,n_neigh))
+            allocate(coeff%at(i)%dc(this%tensor_sketch_n,n_neigh))
          endif
-         do a = 1, this%radial%n
-            l = this%radial%l(a)
+         do a = 1, this%tensor_sketch_n
+            l = this%tensor_sketch_l(a)
             coeff%at(i)%l(a) = l
-            coeff%at(i)%energy(a) = this%radial%energy(a)
+            coeff%at(i)%energy(a) = this%tensor_sketch_energy(a)
 
             allocate(coeff%at(i)%c(a)%m(-l:l))
             coeff%at(i)%c(a)%m = CPLX_ZERO
