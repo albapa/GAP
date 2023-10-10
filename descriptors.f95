@@ -156,6 +156,7 @@ module descriptors_module
    endtype cplx_3d
 
    type radial_value_deriv
+      real(dp), dimension(:), allocatable :: energy
       real(dp), dimension(:,:), allocatable :: value
       real(dp), dimension(:,:,:), allocatable :: deriv
    endtype radial_value_deriv
@@ -528,7 +529,7 @@ module descriptors_module
       integer :: tensor_sketch_n
       real(dp), dimension(:,:,:,:), allocatable :: tensor_sketch_weight
       integer, dimension(:), allocatable :: tensor_sketch_l
-      real(dp), dimension(:), allocatable :: tensor_sketch_energy
+      real(dp), dimension(:,:,:), allocatable :: tensor_sketch_energy
 
       integer, dimension(total_elements) :: species_map = 0
       type(int_1d), dimension(:), allocatable :: l_map
@@ -3524,9 +3525,9 @@ module descriptors_module
       integer, parameter :: n_r = 201
       integer :: n_max, l_max
 
-      real(dp) :: energy, weight
+      real(dp) :: energy, weight, norm
       real(dp), dimension(:), allocatable :: r,f
-      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l, n_lo, n_hi
+      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l, n_lo, n_hi, orig_seed, tensor_sketch_seed
       integer, dimension(:), allocatable :: species_Z
       type(InOutput) :: my_file
       character(len=STRING_LENGTH) :: my_filename, species_Z_str
@@ -3552,6 +3553,7 @@ module descriptors_module
       call param_register(params, 'n_channel', '0', n_channel, has_value_target=has_n_channel, help_string="Number of mixing channels per radial &
          & channel, the default is the same as the number of species")
       call param_register(params, 'do_tensor_sketch', 'F', do_tensor_sketch,  help_string="Whether to do tensor sketching.")
+      call param_register(params, 'tensor_sketch_seed', '123456', tensor_sketch_seed,  help_string="Seed for TS")
 
       if (.not. param_read_line(params, args_str, ignore_unknown=.true.,task='soap_new_initialise args_str')) then
          RAISE_ERROR("soap_new_initialise failed to parse args_str='"//trim(args_str)//"'", error)
@@ -3624,7 +3626,7 @@ module descriptors_module
       this%tensor_sketch_n = n_channel*n_radial
       allocate(this%tensor_sketch_weight(n_radial,this%tensor_sketch_n,n_species,this%order))
       allocate(this%tensor_sketch_l(this%tensor_sketch_n))
-      allocate(this%tensor_sketch_energy(this%tensor_sketch_n))
+      allocate(this%tensor_sketch_energy(this%tensor_sketch_n,n_species,this%order))
 
       n_radial = 0
       do l = 0, l_max
@@ -3658,7 +3660,10 @@ module descriptors_module
       enddo
 
       this%tensor_sketch_weight = 0.0_dp
+      this%tensor_sketch_energy = 0.0_dp
       if( do_tensor_sketch ) then
+         orig_seed = system_get_random_seed()
+         call system_reseed_rng(tensor_sketch_seed)
          do o = 1, this%order
             do s = 1, n_species
                do l = 0, l_max
@@ -3670,10 +3675,21 @@ module descriptors_module
                      n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial,s,o) = &
                      ran_normal(size(this%l_map(l)%m),size(this%l_map(l)%m))
                enddo
-               this%tensor_sketch_energy = matmul(this%radial%energy, &
-                  this%tensor_sketch_weight(:,:,s,o))
+
+               do k = 1, this%tensor_sketch_n
+                  norm = 0.0_dp
+                  do n = 1, n_radial
+                     this%tensor_sketch_energy(k,s,o) = this%tensor_sketch_energy(k,s,o) + &
+                        this%tensor_sketch_weight(n,k,s,o)**2*this%radial%energy(n)
+                     norm = norm + this%tensor_sketch_weight(n,k,s,o)**2
+                  enddo
+                  this%tensor_sketch_energy(k,s,o) = this%tensor_sketch_energy(k,s,o) / norm
+               enddo
             enddo
          enddo
+         call system_reseed_rng(orig_seed)
+
+
       else ! fill it with a diagonal
          do o = 1, this%order
             do s = 1, n_species
@@ -3681,7 +3697,7 @@ module descriptors_module
                   k = n + (s-1)*n_radial
                   this%tensor_sketch_weight(n,k,s,o) = 1.0_dp
                   this%tensor_sketch_l(k) = this%radial%l(n)
-                  this%tensor_sketch_energy(k) = this%radial%energy(n)
+                  this%tensor_sketch_energy(k,s,o) = this%radial%energy(n)
                enddo
             enddo
          enddo
@@ -13403,7 +13419,7 @@ call print("mask present ? "//present(mask))
       integer, intent(in), optional :: order
       integer, optional, intent(out) :: error
 
-      integer :: a, i, j, n, my_n_neighbours, my_order, o, s
+      integer :: a, i, j, k, n, my_n_neighbours, my_order, o, s
       real(dp) :: r_ij
       real(dp), dimension(3) :: u_ij
       real(dp), dimension(this%radial%n) :: radial_values
@@ -13427,7 +13443,9 @@ call print("mask present ? "//present(mask))
       do i = 1, at%N
          my_n_neighbours = n_neighbours(at, i, error=error)
          allocate(radial%at(i)%value(this%tensor_sketch_n,my_n_neighbours))
+         allocate(radial%at(i)%energy(this%tensor_sketch_n))
          radial%at(i)%value = 0.0_dp
+         radial%at(i)%energy = 0.0_dp
          if(do_gradient) then
             allocate(radial%at(i)%deriv(3,this%tensor_sketch_n,my_n_neighbours))
             radial%at(i)%deriv = 0.0_dp
@@ -13447,7 +13465,12 @@ call print("mask present ? "//present(mask))
                   this%tensor_sketch_weight(:,:,s,my_order))
 
             endif
+
+            do k = 1, this%tensor_sketch_n
+               radial%at(i)%energy(k) = radial%at(i)%energy(k) + this%tensor_sketch_energy(k,s,my_order)
+            enddo
          enddo
+         if( my_n_neighbours > 0 ) radial%at(i)%energy = radial%at(i)%energy / my_n_neighbours
       enddo
       call system_timer('soap_new_radial')
 
@@ -13530,7 +13553,7 @@ call print("mask present ? "//present(mask))
          do a = 1, this%tensor_sketch_n
             l = this%tensor_sketch_l(a)
             coeff%at(i)%l(a) = l
-            coeff%at(i)%energy(a) = this%tensor_sketch_energy(a)
+            coeff%at(i)%energy(a) = radial%at(i)%energy(a)
 
             allocate(coeff%at(i)%c(a)%m(-l:l))
             coeff%at(i)%c(a)%m = CPLX_ZERO
@@ -13856,6 +13879,7 @@ call print("mask present ? "//present(mask))
 
       if(allocated(this%at)) then
          do i = 1, size(this%at)
+            if(allocated(this%at(i)%energy)) deallocate(this%at(i)%energy)
             if(allocated(this%at(i)%value)) deallocate(this%at(i)%value)
             if(allocated(this%at(i)%deriv)) deallocate(this%at(i)%deriv)
          enddo
