@@ -529,7 +529,7 @@ module descriptors_module
       integer :: tensor_sketch_n
       real(dp), dimension(:,:,:,:), allocatable :: tensor_sketch_weight
       integer, dimension(:), allocatable :: tensor_sketch_l
-      real(dp), dimension(:,:,:), allocatable :: tensor_sketch_energy
+      real(dp), dimension(:,:,:), allocatable :: tensor_sketch_energy, tensor_sketch_radial_0
 
       integer, dimension(total_elements) :: species_map = 0
       type(int_1d), dimension(:), allocatable :: l_map
@@ -3527,8 +3527,9 @@ module descriptors_module
 
       real(dp) :: energy, weight, norm
       real(dp), dimension(:), allocatable :: r,f
-      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l, n_lo, n_hi, orig_seed, tensor_sketch_seed
+      integer :: l, n, s, o, k, n_channel, n_species, n_radial, n_l, n_lo, n_hi, n_t_lo, n_t_hi, orig_seed, tensor_sketch_seed
       integer, dimension(:), allocatable :: species_Z
+      real(dp), dimension(:), allocatable :: radial_0
       type(InOutput) :: my_file
       character(len=STRING_LENGTH) :: my_filename, species_Z_str
 
@@ -3627,6 +3628,7 @@ module descriptors_module
       allocate(this%tensor_sketch_weight(n_radial,this%tensor_sketch_n,n_species,this%order))
       allocate(this%tensor_sketch_l(this%tensor_sketch_n))
       allocate(this%tensor_sketch_energy(this%tensor_sketch_n,n_species,this%order))
+      allocate(this%tensor_sketch_radial_0(this%tensor_sketch_n,n_species,this%order))
 
       n_radial = 0
       do l = 0, l_max
@@ -3652,8 +3654,8 @@ module descriptors_module
                call read_ascii(my_file, f)
                call finalise(my_file)
 
-               !weight = cos_cutoff_function(energy,this%cutoff_energy)
-               !f = f * weight
+               weight = cos_cutoff_function(energy,this%cutoff_energy)
+               f = f * weight
                call initialise(this%radial%values(n_radial),r,f,0.0_dp,0.0_dp)
             endif
          enddo
@@ -3669,11 +3671,17 @@ module descriptors_module
                do l = 0, l_max
                   n_lo = this%l_map(l)%m(1)
                   n_hi = this%l_map(l)%m(size(this%l_map(l)%m))
-                  this%tensor_sketch_l(n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial) = l
 
-                  this%tensor_sketch_weight(n_lo:n_hi, &
-                     n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial,s,o) = &
-                     ran_normal(size(this%l_map(l)%m),size(this%l_map(l)%m))
+
+                  n_t_lo = (n_lo-1)*n_channel + 1
+                  n_t_hi = (n_hi)*n_channel
+                  !this%tensor_sketch_l(n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial) = l
+                  this%tensor_sketch_l(n_t_lo:n_t_hi) = l
+
+                  !this%tensor_sketch_weight(n_lo:n_hi, &
+                  !   n_lo+(s-1)*n_radial:n_hi+(s-1)*n_radial,s,o) = &
+                  this%tensor_sketch_weight(n_lo:n_hi, n_t_lo:n_t_hi,s,o) = &
+                     ran_normal(n_hi-n_lo+1,n_t_hi-n_t_lo+1)
                enddo
 
                do k = 1, this%tensor_sketch_n
@@ -3694,7 +3702,8 @@ module descriptors_module
          do o = 1, this%order
             do s = 1, n_species
                do n = 1, n_radial
-                  k = n + (s-1)*n_radial
+                  !k = n + (s-1)*n_radial
+                  k = (n-1)*n_species + s
                   this%tensor_sketch_weight(n,k,s,o) = 1.0_dp
                   this%tensor_sketch_l(k) = this%radial%l(n)
                   this%tensor_sketch_energy(k,s,o) = this%radial%energy(n)
@@ -3703,9 +3712,51 @@ module descriptors_module
          enddo
       endif
 
+      allocate(radial_0(n_radial))
+      radial_0 = 0.0_dp
+      do n = 1, n_radial
+         if( this%radial%l(n) == 0 ) then
+            radial_0(n) = spline_value(this%radial%values(n),0.0_dp)
+         else
+            radial_0(n) = 0.0_dp
+         endif
+      enddo
+      do o = 1, this%order
+         do s = 1, n_species
+            this%tensor_sketch_radial_0(:,s,o) = matmul(radial_0,this%tensor_sketch_weight(:,:,s,o))
+         enddo
+      enddo
+      
+
+!do o = 1, this%order
+!print*,"order", o
+!do s = 1, n_species
+!print*,"species",s
+!print*,"weights"
+!call print(this%tensor_sketch_weight(:,:,s,o))
+!print*,"energy"
+!call print(this%tensor_sketch_energy(:,s,o))
+!print*,"radial_0"
+!call print(this%tensor_sketch_radial_0(:,s,o))
+!enddo
+!enddo
+!print*,"angular"
+! call print(this%tensor_sketch_l)
+!
+!print*, "original"
+!print*,"angular"
+!call print(this%radial%l)
+!print*,"energy"
+!call print(this%radial%energy)
+!print*,"radial_0"
+!call print(radial_0)
+
+
+
       if(allocated(species_Z)) deallocate(species_Z)
       if(allocated(r)) deallocate(r)
       if(allocated(f)) deallocate(f)
+      if(allocated(radial_0)) deallocate(radial_0)
 
       this%initialised = .true.
 
@@ -3740,6 +3791,7 @@ module descriptors_module
       if(allocated(this%tensor_sketch_weight)) deallocate(this%tensor_sketch_weight)
       if(allocated(this%tensor_sketch_l)) deallocate(this%tensor_sketch_l)
       if(allocated(this%tensor_sketch_energy)) deallocate(this%tensor_sketch_energy)
+      if(allocated(this%tensor_sketch_radial_0)) deallocate(this%tensor_sketch_radial_0)
 
       this%species_map = 0
       if(allocated(this%l_map)) then
@@ -10700,7 +10752,7 @@ module descriptors_module
          endif
       enddo
 
-      call soap_new_radial(this,at,radial,my_do_grad_descriptor,error)
+      call soap_new_radial(this,at,radial,my_do_grad_descriptor,error=error)
       call soap_new_angular(this,at,angular,my_do_grad_descriptor,error)
 
       call soap_new_coefficient(this,at,radial,angular,my_do_grad_descriptor,&
@@ -10722,6 +10774,7 @@ module descriptors_module
 
 
          if(my_do_grad_descriptor) then
+            descriptor_out%x(i)%has_grad_data = .false.
             descriptor_out%x(i)%ii(0) = i
             descriptor_out%x(i)%pos(:,0) = at%pos(:,i)
             descriptor_out%x(i)%has_grad_data(0) = .true.
@@ -12954,7 +13007,8 @@ call print("mask present ? "//present(mask))
 
       do i = 1, at%N
          n_descriptors = n_descriptors + 1
-         n_cross = n_cross + n_neighbours(at,i,max_dist=this%cutoff) + 1
+         !n_cross = n_cross + n_neighbours(at,i),max_dist=this%cutoff) + 1
+         n_cross = n_cross + n_neighbours(at,i) + 1
       enddo
 
       ! if(this%global) then
@@ -13441,13 +13495,15 @@ call print("mask present ? "//present(mask))
       allocate(radial%at(at%N))
    
       do i = 1, at%N
+         s = this%species_map(at%Z(i))
          my_n_neighbours = n_neighbours(at, i, error=error)
-         allocate(radial%at(i)%value(this%tensor_sketch_n,my_n_neighbours))
+         allocate(radial%at(i)%value(this%tensor_sketch_n,0:my_n_neighbours))
          allocate(radial%at(i)%energy(this%tensor_sketch_n))
          radial%at(i)%value = 0.0_dp
+         radial%at(i)%value(:,0) = this%tensor_sketch_radial_0(:,my_order,s)
          radial%at(i)%energy = 0.0_dp
          if(do_gradient) then
-            allocate(radial%at(i)%deriv(3,this%tensor_sketch_n,my_n_neighbours))
+            allocate(radial%at(i)%deriv(3,this%tensor_sketch_n,0:my_n_neighbours))
             radial%at(i)%deriv = 0.0_dp
          endif
          do n = 1, my_n_neighbours
@@ -13557,11 +13613,12 @@ call print("mask present ? "//present(mask))
 
             allocate(coeff%at(i)%c(a)%m(-l:l))
             coeff%at(i)%c(a)%m = CPLX_ZERO
-            if( l == 0 ) coeff%at(i)%c(a)%m(0) = 0.5_dp / sqrt(PI) * spline_value(this%radial%values(a),0.0_dp)
+            !if( l == 0 ) coeff%at(i)%c(a)%m(0) = 0.5_dp / sqrt(PI) * spline_value(this%radial%values(a),0.0_dp)
+            coeff%at(i)%c(a)%m(0) = 0.5_dp / sqrt(PI) * radial%at(i)%value(a,0)
          enddo
          do n = 1, size(angular%at(i)%ylm)
-            do a = 1, this%radial%n
-               l = this%radial%l(a)
+            do a = 1, this%tensor_sketch_n
+               l = this%tensor_sketch_l(a)
                coeff%at(i)%c(a)%m = coeff%at(i)%c(a)%m + &
                    angular%at(i)%ylm(n)%mm(l,-l:l)*radial%at(i)%value(a,n)
                if(do_gradient) then
@@ -13601,11 +13658,11 @@ call print("mask present ? "//present(mask))
       i = 0
       do a = 1, c1%n
          do b = merge(a,1,my_upper_only), c2%n
-            energy_ab = c1%energy(a) + c2%energy(b)
-            if( c1%l(a) == c2%l(b) .and. energy_ab < this%cutoff_energy ) then
+            !energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
                i = i+1
                l = c1%l(a)
-               p%data(i) = real(sum(c1%c(a)%m*conjg(c2%c(b)%m))) / sqrt(2.0_dp*l + 1.0_dp) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+               p%data(i) = real(sum(c1%c(a)%m*conjg(c2%c(b)%m))) / sqrt(2.0_dp*l + 1.0_dp) ! * cos_cutoff_function(energy_ab,this%cutoff_energy)
                if( my_upper_only .and. a /= b) p%data(i) = p%data(i) * SQRT_TWO
             endif
          enddo
@@ -13614,19 +13671,19 @@ call print("mask present ? "//present(mask))
       p_norm = sqrt(sum(p%data*p%data))
 
       if(do_gradient) then
-         p%has_grad_data = .true.
+         !p%has_grad_data = .true.
          do n = 1, ubound(c2%dc,dim=2)
             i = 0
             do a = 1, c1%n
                do b = merge(a,1,my_upper_only), c2%n
-                  energy_ab = c1%energy(a) + c2%energy(b)
-                  if( c1%l(a) == c2%l(b) .and. energy_ab < this%cutoff_energy ) then
+                  !energy_ab = c1%energy(a) + c2%energy(b)
+                  if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
                      l = c1%l(a)
                      i = i+1
                      p%grad_data(i,:,n) = real( &
                         matmul(conjg(c2%dc(b,n)%mm(:,-l:l)),c1%c(a)%m) + &
                         matmul(c1%dc(a,n)%mm(:,-l:l),conjg(c2%c(b)%m)),dp)
-                     p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*l + 1.0_dp) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+                     p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*l + 1.0_dp) !* cos_cutoff_function(energy_ab,this%cutoff_energy)
                      if( my_upper_only .and. a /= b ) p%grad_data(i,:,n) = p%grad_data(i,:,n) * SQRT_TWO
                   endif
                enddo
@@ -13664,10 +13721,10 @@ call print("mask present ? "//present(mask))
       my_upper_only = optional_default(.true.,upper_only)
 
       i = 0
-      do a = 1, this%radial%n
-         do b = merge(a,1,my_upper_only), this%radial%n
-            energy_ab = this%radial%energy(a) + this%radial%energy(b)
-            if( this%radial%l(a) == this%radial%l(b) .and. energy_ab < this%cutoff_energy ) then
+      do a = 1, this%tensor_sketch_n
+         do b = merge(a,1,my_upper_only), this%tensor_sketch_n
+            !energy_ab = this%radial%energy(a) + this%radial%energy(b)
+            if( this%tensor_sketch_l(a) == this%tensor_sketch_l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
                i = i+1
             endif
          enddo
@@ -13683,16 +13740,17 @@ call print("mask present ? "//present(mask))
       type(coefficient_i), intent(inout) :: c_out
       integer, optional, intent(out) :: error
 
-      integer :: i, a, b, l, n, ma, mb, n_neigh
+      integer :: i, a, b, l, n, ma, mb, n_neigh, l_max
       real(dp) :: energy_ab
 
       call coefficient_i_finalise(c_out)
+      l_max = min(maxval(c1%l),maxval(c2%l))
 
       i = 0
       do a = 1, c1%n
          do b = a, c2%n
-            energy_ab = c1%energy(a) + c2%energy(b)
-            if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+            !energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) + c2%l(b) <= l_max ) then !.and. energy_ab < this%cutoff_energy ) then
                do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
                   i = i + 1
                enddo
@@ -13707,8 +13765,8 @@ call print("mask present ? "//present(mask))
       i = 0
       do a = 1, c1%n
          do b = a, c2%n
-            energy_ab = c1%energy(a) + c2%energy(b)
-            if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+            !energy_ab = c1%energy(a) + c2%energy(b)
+            if( c1%l(a) + c2%l(b) <= l_max ) then ! .and. energy_ab < this%cutoff_energy ) then
                do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
                   i = i+1
 
@@ -13722,7 +13780,7 @@ call print("mask present ? "//present(mask))
                      do mb = -c2%l(b), c2%l(b)
                         !if( cg_check(c2%l(b),mb, c1%l(a), ma, l, ma+mb) ) then
                         if( abs(ma+mb) <= l ) then
-                           c_out%c(i)%m(ma+mb) = c_out%c(i)%m(ma+mb) + c2%c(b)%m(mb)*c1%c(a)%m(ma)*cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb)*cos_cutoff_function(energy_ab,this%cutoff_energy)
+                           c_out%c(i)%m(ma+mb) = c_out%c(i)%m(ma+mb) + c2%c(b)%m(mb)*c1%c(a)%m(ma)*cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb) !*cos_cutoff_function(energy_ab,this%cutoff_energy)
                         endif
 
                      enddo
@@ -13740,8 +13798,8 @@ call print("mask present ? "//present(mask))
             i = 0
             do a = 1, c1%n
                do b = a, c2%n
-                  energy_ab = c1%energy(a) + c2%energy(b)
-                  if( c1%l(a) + c2%l(b) <= 9 .and. energy_ab < this%cutoff_energy ) then
+                  !energy_ab = c1%energy(a) + c2%energy(b)
+                  if( c1%l(a) + c2%l(b) <= l_max ) then !.and. energy_ab < this%cutoff_energy ) then
                      do l = abs(c1%l(a) - c2%l(b)), c1%l(a) + c2%l(b)
                         i = i+1
                         allocate(c_out%dc(i,n)%mm(3,-l:l))
@@ -13752,7 +13810,7 @@ call print("mask present ? "//present(mask))
                               if( abs(ma+mb) <= l ) then
                                  c_out%dc(i,n)%mm(:,ma+mb) = c_out%dc(i,n)%mm(:,ma+mb) + ( c2%dc(b,n)%mm(:,mb)*c1%c(a)%m(ma) + &
                                     c2%c(b)%m(mb)*c1%dc(a,n)%mm(:,ma) ) * &
-                                    cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb) * cos_cutoff_function(energy_ab,this%cutoff_energy)
+                                    cg_array(c2%l(b),mb,c1%l(a),ma,l,ma+mb) !* cos_cutoff_function(energy_ab,this%cutoff_energy)
                               endif
                            enddo ! mb
                         enddo ! ma
@@ -13771,22 +13829,23 @@ call print("mask present ? "//present(mask))
       integer, optional, intent(out) :: error
       integer :: soap_new_bi_dimension
 
-      integer :: i, a, b, c
+      integer :: i, a, b, c, l_max
       real(dp) :: energy_ab
 
       INIT_ERROR(error)
 
       if(.not. this%initialised) return
 
+      l_max = maxval(this%tensor_sketch_l)
 
       i = 0
-      do a = 1, this%radial%n
-         do b = a, this%radial%n
-            do c = 1, this%radial%n
-               energy_ab = this%radial%energy(a) + this%radial%energy(b) + this%radial%energy(c)
-               if( this%radial%l(a) + this%radial%l(b) <= 9 .and. energy_ab < this%cutoff_energy .and. &
-                  this%radial%l(c) >= abs(this%radial%l(a) - this%radial%l(b)) .and. &
-                  this%radial%l(c) <= this%radial%l(a) + this%radial%l(b) ) then
+      do a = 1, this%tensor_sketch_n
+         do b = a, this%tensor_sketch_n
+            do c = 1, this%tensor_sketch_n
+               !energy_ab = this%radial%energy(a) + this%radial%energy(b) + this%radial%energy(c)
+               if( this%tensor_sketch_l(a) + this%tensor_sketch_l(b) <= l_max .and. & !energy_ab < this%cutoff_energy .and. &
+                  this%tensor_sketch_l(c) >= abs(this%tensor_sketch_l(a) - this%tensor_sketch_l(b)) .and. &
+                  this%tensor_sketch_l(c) <= this%tensor_sketch_l(a) + this%tensor_sketch_l(b) ) then
                   i = i+1
                endif
             enddo
