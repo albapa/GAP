@@ -140,6 +140,7 @@ module descriptors_module
    endtype cplx_2d
 
    type int_1d
+      integer :: n
       integer , dimension(:), allocatable :: m
    endtype int_1d
 
@@ -183,6 +184,7 @@ module descriptors_module
    type coefficient_i
       integer :: n
       type(cplx_1d), dimension(:), allocatable :: c
+      type(int_1d), dimension(:), allocatable :: ts_l_map
       integer, dimension(:), allocatable :: l
       real(dp), dimension(:), allocatable :: energy
       type(cplx_2d), dimension(:,:), allocatable :: dc
@@ -532,7 +534,7 @@ module descriptors_module
       real(dp), dimension(:,:,:), allocatable :: tensor_sketch_energy, tensor_sketch_radial_0
 
       integer, dimension(total_elements) :: species_map = 0
-      type(int_1d), dimension(:), allocatable :: l_map
+      type(int_1d), dimension(:), allocatable :: l_map, ts_l_map
       integer :: order, Z
       logical :: do_tensor_sketch, initialised = .false.
    endtype soap_new
@@ -3592,6 +3594,7 @@ module descriptors_module
       if( this%order > 2 ) call cg_initialise(l_max)
 
       allocate(this%l_map(0:l_max))
+      allocate(this%ts_l_map(0:l_max))
       n_radial = 0
       do l = 0, l_max
          n_l = 0
@@ -3606,6 +3609,7 @@ module descriptors_module
                n_l = n_l + 1
             endif
          enddo
+         this%l_map(l)%n = n_l
          allocate(this%l_map(l)%m(n_l))
       enddo
 
@@ -3696,8 +3700,6 @@ module descriptors_module
             enddo
          enddo
          call system_reseed_rng(orig_seed)
-
-
       else ! fill it with a diagonal
          do o = 1, this%order
             do s = 1, n_species
@@ -3710,7 +3712,23 @@ module descriptors_module
                enddo
             enddo
          enddo
+
       endif
+      do l = 0, l_max
+         this%ts_l_map(l)%n = count(this%tensor_sketch_l==l)
+         allocate(this%ts_l_map(l)%m(this%ts_l_map(l)%n))
+         this%ts_l_map(l)%n = 0
+      enddo
+      do k = 1, this%tensor_sketch_n
+         l = this%tensor_sketch_l(k)
+         this%ts_l_map(l)%n = this%ts_l_map(l)%n + 1
+         this%ts_l_map(l)%m(this%ts_l_map(l)%n) = k
+      enddo
+      do l = 0, l_max
+         if( size(this%ts_l_map(l)%m) /= this%ts_l_map(l)%n ) then
+            RAISE_ERROR("soap_new_initialise: something went wrong",error)
+         endif
+      enddo
 
       allocate(radial_0(n_radial))
       radial_0 = 0.0_dp
@@ -3799,6 +3817,12 @@ module descriptors_module
             if(allocated(this%l_map(l)%m)) deallocate(this%l_map(l)%m)
          enddo
          deallocate(this%l_map)
+      endif
+      if(allocated(this%ts_l_map)) then
+         do l = lbound(this%ts_l_map,1), ubound(this%ts_l_map,1)
+            if(allocated(this%ts_l_map(l)%m)) deallocate(this%ts_l_map(l)%m)
+         enddo
+         deallocate(this%ts_l_map)
       endif
 
       this%order = 0
@@ -13593,7 +13617,7 @@ call print("mask present ? "//present(mask))
    endsubroutine soap_new_angular
 
    subroutine soap_new_coefficient(this,at,radial,angular,do_gradient,coeff,error)
-      type(soap_new), intent(in) :: this
+      type(soap_new), intent(in), target :: this
       type(atoms), intent(in) :: at
       logical, intent(in) :: do_gradient
       type(radial_basis), intent(in) :: radial
@@ -13617,6 +13641,12 @@ call print("mask present ? "//present(mask))
          allocate(coeff%at(i)%c(this%tensor_sketch_n))
          allocate(coeff%at(i)%l(this%tensor_sketch_n))
          allocate(coeff%at(i)%energy(this%tensor_sketch_n))
+         allocate(coeff%at(i)%ts_l_map(0:maxval(this%tensor_sketch_l)))
+         do l = 0, maxval(this%tensor_sketch_l)
+            coeff%at(i)%ts_l_map(l)%n = this%ts_l_map(l)%n
+            allocate(coeff%at(i)%ts_l_map(l)%m(this%ts_l_map(l)%n))
+            coeff%at(i)%ts_l_map(l)%m = this%ts_l_map(l)%m
+         enddo
 
          if(do_gradient) then
             n_neigh = size(angular%at(i)%dylm) ! add check to see if radial is commensurate
@@ -13660,7 +13690,7 @@ call print("mask present ? "//present(mask))
       logical, optional, intent(in) :: upper_only
       integer, optional, intent(out) :: error
 
-      integer :: i, a, b, l, n
+      integer :: i, ia, ib, a, b, l, n
       real(dp) :: energy_ab, p_norm
       logical :: my_upper_only
 
@@ -13672,16 +13702,23 @@ call print("mask present ? "//present(mask))
 
       p%has_data = .true.
       i = 0
-      do a = 1, c1%n
-         do b = merge(a,1,my_upper_only), c2%n
+      do l = 0, min(maxval(c1%l),maxval(c2%l))
+         do ia = 1, c1%ts_l_map(l)%n
+            a = c1%ts_l_map(l)%m(ia)
+            do ib = merge(ia,merge(ia,1,my_upper_only),this%do_tensor_sketch), &
+                  merge(ia,c2%ts_l_map(l)%n,this%do_tensor_sketch)
+               b = c2%ts_l_map(l)%m(ib)
+      !do a = 1, c1%n
+         !do b = merge(a,1,my_upper_only), c2%n
          !do b = a, merge(a,merge(a,1,my_upper_only),this%do_tensor_sketch), merge(a,c2%n,this%do_tensor_sketch)
             !energy_ab = c1%energy(a) + c2%energy(b)
-            if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
+            !if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
                i = i+1
-               l = c1%l(a)
+               !l = c1%l(a)
                p%data(i) = real(sum(c1%c(a)%m*conjg(c2%c(b)%m))) / sqrt(2.0_dp*l + 1.0_dp) ! * cos_cutoff_function(energy_ab,this%cutoff_energy)
                if( my_upper_only .and. a /= b) p%data(i) = p%data(i) * SQRT_TWO
-            endif
+            !endif
+            enddo
          enddo
       enddo
 
@@ -13691,19 +13728,27 @@ call print("mask present ? "//present(mask))
          !p%has_grad_data = .true.
          do n = 1, ubound(c2%dc,dim=2)
             i = 0
-            do a = 1, c1%n
-               do b = merge(a,1,my_upper_only), c2%n
+            do l = 0, min(maxval(c1%l),maxval(c2%l))
+               do ia = 1, c1%ts_l_map(l)%n
+                  a = c1%ts_l_map(l)%m(ia)
+                  !do ib = merge(ia,1,my_upper_only), c2%ts_l_map(l)%n
+                  do ib = merge(ia,merge(ia,1,my_upper_only),this%do_tensor_sketch), &
+                        merge(ia,c2%ts_l_map(l)%n,this%do_tensor_sketch)
+                     b = c2%ts_l_map(l)%m(ib)
+            !do a = 1, c1%n
+               !do b = merge(a,1,my_upper_only), c2%n
                !do b = merge(a,merge(a,1,my_upper_only),this%do_tensor_sketch), merge(a,c2%n,this%do_tensor_sketch)
                   !energy_ab = c1%energy(a) + c2%energy(b)
-                  if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
-                     l = c1%l(a)
+                  !if( c1%l(a) == c2%l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
+                     !l = c1%l(a)
                      i = i+1
                      p%grad_data(i,:,n) = real( &
                         matmul(conjg(c2%dc(b,n)%mm(:,-l:l)),c1%c(a)%m) + &
                         matmul(c1%dc(a,n)%mm(:,-l:l),conjg(c2%c(b)%m)),dp)
                      p%grad_data(i,:,n) = p%grad_data(i,:,n) / sqrt(2.0_dp*l + 1.0_dp) !* cos_cutoff_function(energy_ab,this%cutoff_energy)
                      if( my_upper_only .and. a /= b ) p%grad_data(i,:,n) = p%grad_data(i,:,n) * SQRT_TWO
-                  endif
+                  enddo
+                  !endif
                enddo
             enddo
          enddo
@@ -13728,7 +13773,7 @@ call print("mask present ? "//present(mask))
       integer, optional, intent(out) :: error
       integer :: soap_new_power_dimension
 
-      integer :: i, a, b
+      integer :: i, ia, ib, a, b, l
       logical :: my_upper_only
       real(dp) :: energy_ab
 
@@ -13739,13 +13784,20 @@ call print("mask present ? "//present(mask))
       my_upper_only = optional_default(.true.,upper_only)
 
       i = 0
-      do a = 1, this%tensor_sketch_n
-         do b = merge(a,1,my_upper_only), this%tensor_sketch_n
+      do l = 0, maxval(this%tensor_sketch_l)
+         do ia = 1, this%ts_l_map(l)%n
+            a = this%ts_l_map(l)%m(ia)
+            do ib = merge(ia,merge(ia,1,my_upper_only),this%do_tensor_sketch), &
+                  merge(ia,this%ts_l_map(l)%n,this%do_tensor_sketch)
+               b = this%ts_l_map(l)%m(ib)
+      !do a = 1, this%tensor_sketch_n
+         !do b = merge(a,1,my_upper_only), this%tensor_sketch_n
          !do b = merge(a,merge(a,1,my_upper_only),this%do_tensor_sketch), merge(a,this%tensor_sketch_n,this%do_tensor_sketch)
             !energy_ab = this%radial%energy(a) + this%radial%energy(b)
-            if( this%tensor_sketch_l(a) == this%tensor_sketch_l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
+            !if( this%tensor_sketch_l(a) == this%tensor_sketch_l(b) ) then ! .and. energy_ab < this%cutoff_energy ) then
                i = i+1
-            endif
+            !endif
+            enddo
          enddo
       enddo
       soap_new_power_dimension = i
@@ -13875,6 +13927,7 @@ call print("mask present ? "//present(mask))
             enddo
          enddo
       enddo
+print*,"AAB",i
       soap_new_bi_dimension = i
 
    endfunction soap_new_bi_dimension
@@ -13915,6 +13968,12 @@ call print("mask present ? "//present(mask))
             enddo
          enddo
          deallocate(this%dc)
+      endif
+      if( allocated(this%ts_l_map)) then
+         do a = lbound(this%ts_l_map,1), ubound(this%ts_l_map,1)
+            if(allocated(this%ts_l_map(a)%m)) deallocate(this%ts_l_map(a)%m)
+         enddo
+         deallocate(this%ts_l_map)
       endif
       if( allocated(this%l) ) deallocate(this%l)
       if( allocated(this%energy) ) deallocate(this%energy)
