@@ -550,7 +550,7 @@ module descriptors_module
         general_trimer, rdf, as_distance_2b, molecule_lo_d, alex,  com_dimer,  distance_nb, &
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
         ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, soap_turbo, soap_express, &
-        radial_type, soap_new
+        radial_type, int_1d, soap_new
 #else
    public :: soap, bispectrum_so4, bispectrum_so3, behler, distance_2b, &
         coordination, angle_3b, co_angle_3b, co_distance_2b, cosnx, trihis, water_monomer, &
@@ -559,7 +559,7 @@ module descriptors_module
         descriptor_data_mono, fourier_so4_type, radialfunction_type, transfer_parameters_type, &
         ab_dimer, atom_real_space, spherical_harmonics_type, behler_g2, behler_g3, &
         soap_turbo, &
-        radial_type, soap_new
+        radial_type, int_1d, soap_new
 #endif
 
    !=======================================================================
