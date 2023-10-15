@@ -13529,7 +13529,6 @@ call print("mask present ? "//present(mask))
       endif
 
       allocate(radial%at(at%N))
-   
       do i = 1, at%N
          if( at%Z(i) /= this%Z ) cycle
          s = this%species_map(at%Z(i))
@@ -13537,7 +13536,7 @@ call print("mask present ? "//present(mask))
          allocate(radial%at(i)%value(this%tensor_sketch_n,0:my_n_neighbours))
          allocate(radial%at(i)%energy(this%tensor_sketch_n))
          radial%at(i)%value = 0.0_dp
-         radial%at(i)%value(:,0) = this%tensor_sketch_radial_0(:,my_order,s)
+         radial%at(i)%value(:,0) = this%tensor_sketch_radial_0(:,s,my_order)
          radial%at(i)%energy = 0.0_dp
          if(do_gradient) then
             allocate(radial%at(i)%deriv(3,this%tensor_sketch_n,0:my_n_neighbours))
